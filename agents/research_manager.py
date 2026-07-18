@@ -19,7 +19,7 @@ FIXES (Batch 2 audit):
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from agents.schemas import ResearchPlan, PortfolioRating, parse_rating, parse_confidence
 from external.llm_provider import LLMProvider, LLMMessage

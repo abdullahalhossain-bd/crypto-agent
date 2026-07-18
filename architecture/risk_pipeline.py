@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from architecture.event_bus import EventBus, EventType, get_bus
-from architecture.portfolio_manager_v2 import PortfolioManager
+from architecture.portfolio_manager_v2 import PortfolioManager, PortfolioMetrics
 from utils.logger import get_logger
 
 log = get_logger("trading_bot.architecture.risk_pipeline")

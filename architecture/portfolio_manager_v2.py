@@ -567,7 +567,6 @@ class PortfolioManager:
             #
             # risk_amount = lots × sl_distance × contract_size = the $ you lose
             # if the stop-loss triggers. This is the true capital exposure.
-            sizing = ctx_pipeline_state if 'ctx_pipeline_state' in dir() else None
             # proposed_risk is already the risk_amount from SizingGate
             symbol_risk_weight = (proposed_risk + reserved_heat) / equity
             if symbol_risk_weight > self._max_symbol_weight:

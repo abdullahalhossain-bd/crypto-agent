@@ -24,9 +24,9 @@ FIXES (Batch 2 audit):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class PortfolioRating(str, Enum):

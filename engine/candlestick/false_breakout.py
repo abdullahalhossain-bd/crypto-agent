@@ -63,6 +63,7 @@ class FalseBreakoutDetector:
 
         # Did prev bar break out?
         prev_close = float(prev_bar["close"])
+        prev_open = float(prev_bar["open"])
         prev_high = float(prev_bar["high"])
         prev_low = float(prev_bar["low"])
 
@@ -121,6 +122,20 @@ class FalseBreakoutDetector:
             range_ = last_high - last_low
             if range_ > 0 and lower_wick / range_ > 0.5:
                 prob += 0.10
+        # Breakout-bar wick rejection: if the breakout bar itself had a long
+        # opposing wick, it was already being rejected before the next bar.
+        prev_bar_range = prev_high - prev_low
+        if prev_bar_range > 0:
+            if broke_up:
+                # Upper wick on an upward breakout = selling pressure on the breakout bar
+                breakout_wick = (prev_high - max(prev_open, prev_close)) / prev_bar_range
+                if breakout_wick > 0.5:
+                    prob += 0.10
+            else:
+                # Lower wick on a downward breakout = buying pressure on the breakout bar
+                breakout_wick = (min(prev_open, prev_close) - prev_low) / prev_bar_range
+                if breakout_wick > 0.5:
+                    prob += 0.10
 
         prob = float(max(0.0, min(1.0, prob)))
 
@@ -132,6 +147,8 @@ class FalseBreakoutDetector:
                 "range_high": range_high,
                 "range_low": range_low,
                 "breakout_close": prev_close,
+                "prev_high": prev_high,
+                "prev_low": prev_low,
                 "last_close": last_close,
                 "reversal_strength": float(reversal_strength),
                 "vol_spike_then_fade": bool(vol_spike_then_fade),

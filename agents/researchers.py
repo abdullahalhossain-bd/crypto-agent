@@ -22,7 +22,7 @@ FIXES (Batch 2 audit):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from external.llm_provider import LLMProvider, LLMMessage

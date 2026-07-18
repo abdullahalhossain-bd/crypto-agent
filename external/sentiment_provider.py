@@ -176,7 +176,6 @@ class SentimentProviderManager:
         except (HTTPError, URLError, TimeoutError):
             return None
         # Parse position book
-        book = data.get("positionBook", {})
         # This is a simplified parse — OANDA's position book is complex
         long_pct = 50.0
         short_pct = 50.0

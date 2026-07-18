@@ -24,7 +24,7 @@ FIXES (Batch 2 audit):
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -32,7 +32,6 @@ from agents.schemas import (
     TraderAction, TraderProposal, PortfolioRating,
 )
 from external.llm_provider import LLMProvider, LLMMessage
-from utils.indicators import atr
 from utils.logger import get_logger
 
 log = get_logger("agents.trader")

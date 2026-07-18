@@ -267,6 +267,21 @@ class TradingBot:
         # OPEN, the entire cycle is skipped.
         from architecture.circuit_breaker import CircuitBreakerCoordinator
         self.breakers = CircuitBreakerCoordinator(config, bus=self._bus)
+
+        # TIER 1: per-symbol manipulation detector
+        from engine.manipulation_detector import ManipulationDetector
+        self._manipulation_detector = ManipulationDetector()
+
+        # TIER 4: dynamic exit intelligence for open positions
+        from trading_modules.dynamic_exit_intelligence import DynamicExitIntelligence
+        _exit_cfg = config.get("exit_intelligence", {})
+        self._exit_intel = DynamicExitIntelligence(
+            breakeven_r=float(_exit_cfg.get("breakeven_r", 1.0)),
+            trail_start_r=float(_exit_cfg.get("trail_start_r", 1.5)),
+            partial_close_r=float(_exit_cfg.get("partial_close_r", 2.0)),
+            max_hold_bars=int(_exit_cfg.get("max_hold_bars", 100)),
+            max_adverse_r=float(_exit_cfg.get("max_adverse_r", -1.5)),
+        )
         self.self_healing = SelfHealingSystem(bus=self._bus)
         # DecisionAuditor still owns its in-memory ring buffer, but its
         # persistent writes now go through self.db (see P0-8 FIX in
@@ -948,9 +963,19 @@ class TradingBot:
                     mt5_healthy = False
             else:
                 equity = self.portfolio.equity()
+                mt5_healthy = True  # paper/live-non-mt5 is always healthy
 
             self.monitor.update_equity(equity)
             result.equity = equity
+
+            # 3b. MT5 health gate — if MT5 is disconnected, skip ALL trading
+            # for this cycle. Equity is already preserved (last-known value).
+            # We still update the cycle result so the operator sees the state.
+            if not mt5_healthy:
+                log.warning("TradingBot: MT5 unhealthy — skipping all trading this cycle "
+                            "(equity preserved at $%.2f)", equity)
+                result.state = "MT5_DISCONNECTED"
+                return result
 
             # 4. Regime adjustments
             # FIX Bug #3: Only block ALL trading for CRISIS regime (systemic
@@ -1240,16 +1265,32 @@ class TradingBot:
             # Prompt #7: list the specific issue types, not just a count
             issue_types = [i.issue_type for i in dv_result.issues if i.severity == "error"]
             issue_detail = ", ".join(issue_types[:5])  # max 5 to keep readable
-            self._record_skip(symbol, equity, fv if 'fv' in dir() else None,
-                            consensus if 'consensus' in dir() else None, result,
+            self._record_skip(symbol, equity, None, None, result,
                             reason=f"DataValidator:{issue_detail}({dv_result.bars_checked} bars)")
             if self._trace_enabled:
                 report = self._format_decision_report(
-                    symbol, df, fv if 'fv' in dir() else None, None, None, None, None, None,
+                    symbol, df, None, None, None, None, None, None,
                     _timing, skip_reason=f"DataValidator:{issue_detail}",
                     regime=str(getattr(adjustments, 'regime', 'unknown')))
                 log.info("%s", report)
             return
+
+        # TIER 1: manipulation detection (per-symbol veto BEFORE signals)
+        try:
+            _manip = self._manipulation_detector.check(df, symbol)
+            if _manip.veto:
+                self._record_skip(symbol, equity, None, None, result,
+                                reason=f"manipulation:{_manip.veto_reason}")
+                if self._trace_enabled:
+                    _timing["Manipulation Check"] = (time.monotonic() - _t0) * 1000
+                    report = self._format_decision_report(
+                        symbol, df, None, None, None, None, None, None,
+                        _timing, skip_reason=f"manipulation:{_manip.veto_reason}",
+                        regime=str(getattr(adjustments, 'regime', 'unknown')))
+                    log.info("%s", report)
+                return
+        except Exception:
+            pass  # non-fatal — don't block trading on detector error
 
         # Compute feature vector (ONCE per cycle per symbol — shared across all gates)
         _t_feat = time.monotonic()
@@ -2643,6 +2684,55 @@ class TradingBot:
                     except Exception as e:
                         log.debug("TradingBot: trailing stop check failed for %s: %r",
                                  pos["symbol"], e)
+
+                # 3. TIER 4: Dynamic exit intelligence
+                # Evaluates trend weakening, momentum loss, structure break,
+                # volatility spikes — recommends early exit if warranted.
+                try:
+                    tick = self.exchange.symbol_tick(pos["symbol"])
+                    current_price = tick.mid if tick else 0.0
+                    if current_price > 0 and pos.get("entry_price"):
+                        direction = 1 if pos["side"] == "BUY" else -1
+                        profit = (current_price - pos["entry_price"]) * direction
+                        risk_per_unit = abs(pos["entry_price"] - pos.get("sl", 0))
+                        r_mult = profit / risk_per_unit if risk_per_unit > 0 else 0.0
+                        # Get recent df for this symbol (use cache if available)
+                        pos_df = None
+                        try:
+                            pos_df = self.exchange.fetch_candles(pos["symbol"], "M15", 100)
+                        except Exception:
+                            pass
+                        if pos_df is not None and len(pos_df) >= 20:
+                            exit_rec = self._exit_intel.evaluate(
+                                position_side=pos["side"],
+                                entry_price=pos["entry_price"],
+                                current_price=current_price,
+                                stop_loss=pos.get("sl", 0.0),
+                                take_profit=pos.get("tp", 0.0),
+                                df=pos_df,
+                                r_multiple=r_mult,
+                                spread_bps=pos.get("spread_bps", 5.0),
+                            )
+                            if exit_rec.action in (ExitAction.CLOSE, ExitAction.CLOSE_PARTIAL):
+                                log.info("TradingBot: EXIT_INTEL %s action=%s reason=%s "
+                                         "urgency=%s ticket=%d",
+                                         pos["symbol"], exit_rec.action.value,
+                                         exit_rec.reason, exit_rec.urgency.value,
+                                         ticket)
+                            elif exit_rec.action == ExitAction.MODIFY:
+                                # Update SL/TP if recommended
+                                if exit_rec.new_sl and exit_rec.new_sl != pos.get("sl"):
+                                    if self._mode != "paper":
+                                        self.exchange.modify_order(
+                                            ticket, exit_rec.new_sl, pos.get("tp"))
+                                    self.portfolio.update_position_sl_tp(
+                                        ticket, sl=exit_rec.new_sl, tp=pos.get("tp"))
+                                    log.info("TradingBot: EXIT_INTEL modify SL %s → %.5f "
+                                             "(reason: %s)", pos["symbol"],
+                                             exit_rec.new_sl, exit_rec.reason)
+                except Exception as exit_exc:
+                    log.debug("TradingBot: exit intelligence error for %s: %r",
+                             pos.get("symbol", "?"), exit_exc)
             except Exception as e:
                 log.debug("TradingBot: position management failed for %s: %r",
                          pos.get("symbol", "?"), e)

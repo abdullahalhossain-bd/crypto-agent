@@ -45,7 +45,7 @@ import pandas as pd
 
 from external.llm_provider import LLMProvider, LLMMessage
 from utils.indicators import (
-    sma, ema, rsi, macd, bbands, atr, obv, vwap, rvol,
+    sma, rsi, macd, bbands, atr, obv, rvol,
 )
 from utils.logger import get_logger
 

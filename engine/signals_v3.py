@@ -56,14 +56,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import platform
 import socket
 import uuid as _uuid
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+
+from utils.logger import get_logger
+
+log = get_logger("trading_bot.engine.signals_v3")
 
 
 # ======================================================================

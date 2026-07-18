@@ -504,13 +504,11 @@ class MultiAgentTradingGraph:
     def _audit_log_decision(self, symbol: str, trade_date: str,
                               result: TradingGraphResult) -> None:
         """H20 fix: write the final decision to the Database decisions table."""
-        import json as _json
         import uuid as _uuid
         decision = result.final_decision
         if decision is None:
             return
         audit_id = str(_uuid.uuid4())
-        now = datetime.now(tz=timezone.utc).isoformat()
         # The decisions table schema (from database.py) expects these columns.
         # We store the full graph result as the feature_vector for forensic review.
         feature_vector = {

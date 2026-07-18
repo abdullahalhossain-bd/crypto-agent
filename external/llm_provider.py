@@ -28,8 +28,8 @@ import json
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError

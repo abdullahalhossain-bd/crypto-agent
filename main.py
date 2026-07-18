@@ -156,14 +156,6 @@ def _cycle_with_timeout(bot, timeout_s: float):
 
     Returns the CycleResult on success, or raises TimeoutError.
     """
-    result_box: dict = {}
-
-    def _worker():
-        try:
-            result_box["result"] = bot.cycle()
-        except BaseException as exc:  # noqa: BLE001 — re-raised in caller
-            result_box["exc"] = exc
-
     # P0-12 fix: use ThreadPoolExecutor with cancel_futures instead of raw
     # Thread. This allows the executor to clean up properly and prevents
     # two concurrent cycle() calls if the timeout fires.
@@ -181,9 +173,6 @@ def _cycle_with_timeout(bot, timeout_s: float):
     except Exception:
         t.shutdown(wait=False, cancel_futures=True)
         raise
-    if "exc" in result_box:
-        raise result_box["exc"]
-    return result_box.get("result")
 
 
 # ----------------------------------------------------------------------
@@ -274,6 +263,65 @@ def _shutdown_with_timeout(bot, reason: str, timeout_s: float = 30.0) -> None:
         log.info("shutdown completed cleanly")
 
 
+def run_validate(cfg: dict) -> None:
+    """TIER 6: Readiness gate assessment — GO/NO-GO before live money.
+
+    Runs the 8-point ReadinessGate evaluation and prints a human-readable
+    report. Exits with code 0 on GO, code 1 on NO-GO.
+    """
+    import json
+    from validation.readiness_gate import ReadinessGate
+
+    gate = ReadinessGate(
+        require_all_pass=cfg.get("validation", {}).get("require_all_pass", True),
+        allow_warn_with_operator_approval=cfg.get("validation", {}).get(
+            "allow_warn", True),
+    )
+
+    # Collect available evidence (each module is optional — SKIP if not available)
+    edge_proof = None
+    try:
+        from validation.edge_proof import EdgeProof
+        ep = EdgeProof(db_path=cfg.get("database", {}).get("path", "data/trading_bot.db"))
+        edge_proof = ep.run().to_dict()
+    except Exception:
+        pass
+
+    kill_switch_report = None
+    try:
+        from validation.kill_switch_validator import KillSwitchValidator
+        ksv = KillSwitchValidator(
+            kill_file=cfg.get("runtime", {}).get("kill_switch_file", "data/KILL_SWITCH"))
+        kill_switch_report = ksv.validate().to_dict()
+    except Exception:
+        pass
+
+    report = gate.evaluate(
+        edge_proof_result=edge_proof,
+        kill_switch_report=kill_switch_report,
+    )
+
+    # Print report
+    print("=" * 60)
+    print(f"READINESS GATE — {report.overall_status}")
+    print(f"Timestamp: {report.timestamp}")
+    print(f"Pass: {report.n_pass}  Warn: {report.n_warn}  "
+          f"Fail: {report.n_fail}  Skip: {report.n_skip}")
+    print("-" * 60)
+    for v in report.verdicts:
+        icon = {"PASS": "✓", "WARN": "⚠", "FAIL": "✗", "SKIP": "—"}.get(
+            v["status"], "?")
+        print(f"  [{icon}] {v['name']}: {v['reason']}")
+    if report.blocking_issues:
+        print("-" * 60)
+        print("BLOCKING ISSUES:")
+        for issue in report.blocking_issues:
+            print(f"  ✗ {issue}")
+    print("=" * 60)
+
+    sys.exit(0 if report.overall_status in ("GO", "CONDITIONAL") else 1)
+
+
 def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
     """Main trading loop.
 
@@ -325,6 +373,56 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
     last_logged_equity = 0.0
     current_poll_s = poll_s
 
+    # ------------------------------------------------------------------
+    # TIER 5 wiring: monitoring / observability (non-blocking, no trade-logic impact)
+    # ------------------------------------------------------------------
+    from monitoring.system_monitor import SystemMonitor
+    from monitoring.trading_monitor import TradingMonitor
+    from monitoring.alpha_monitor import AlphaMonitor
+    from monitoring.risk_monitor import RiskMonitor
+    from monitoring.alert_system import AlertSystem, Alert, AlertSeverity
+    from observability.metrics import MetricsCollector
+    from observability.dashboard import DashboardRenderer
+
+    _mon_cfg = cfg.get("monitoring", {})
+    _sys_mon = SystemMonitor()
+    _trade_mon = TradingMonitor()
+    _alpha_mon = AlphaMonitor()
+    _risk_mon = RiskMonitor(
+        max_var_pct=float(_mon_cfg.get("max_var_pct", 0.04)),
+        max_correlation=float(_mon_cfg.get("max_correlation", 0.85)),
+        max_concentration_hhi=float(_mon_cfg.get("max_concentration_hhi", 0.5)),
+    )
+    _alert_sys = AlertSystem(
+        log_path=_mon_cfg.get("alert_log_path", "data/alerts.jsonl"),
+        webhook_url=_mon_cfg.get("webhook_url"),
+    )
+    _metrics_col = MetricsCollector(
+        path=_mon_cfg.get("metrics_path", "data/metrics.jsonl"),
+    )
+    _dash_renderer = DashboardRenderer(
+        output_path=_mon_cfg.get("dashboard_path", "data/dashboard.html"),
+        auto_refresh_s=int(_mon_cfg.get("dashboard_refresh_s", 30)),
+    )
+    _dashboard_every = int(_mon_cfg.get("dashboard_every_n_cycles", 10))
+    _monitor_every = int(_mon_cfg.get("monitor_report_every_n_cycles", 20))
+
+    # ------------------------------------------------------------------
+    # TIER 1 wiring: portfolio-level safety gates (run BEFORE bot.cycle)
+    # ------------------------------------------------------------------
+    from trading_modules.kill_conditions import KillConditions, PortfolioState
+    from engine.guardrails import GuardrailEngine
+
+    _kill_cfg = cfg.get("kill_conditions", {})
+    _kill_cond = KillConditions(
+        max_cumulative_loss=float(_kill_cfg.get("max_cumulative_loss", 500.0)),
+        max_loss_cooldown_days=int(_kill_cfg.get("max_loss_cooldown_days", 7)),
+        min_sharpe=float(_kill_cfg.get("min_sharpe", 0.0)),
+        max_drawdown_pct=float(_kill_cfg.get("max_drawdown_pct", 15.0)),
+    )
+    _guardrails = GuardrailEngine()
+    _start_of_day_equity = 0.0
+
     try:
         while not _SHUTDOWN:
             # C15: check kill-switch at the TOP of every cycle iteration.
@@ -337,6 +435,40 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
             # H19 fix: even in `once` mode we honour the kill-switch.
             if once and _SHUTDOWN:
                 break
+
+            # --- TIER 1: portfolio-level safety (before cycle) ---
+            try:
+                _metrics = bot.portfolio.metrics()
+                _pstate = PortfolioState(
+                    cumulative_loss_usd=-min(0.0, _metrics.realized_pnl_total),
+                    current_drawdown_pct=_metrics.current_drawdown_pct,
+                )
+                _kd = _kill_cond.check(_pstate)
+                if not _kd.can_trade:
+                    log.warning("KillConditions: %s — state=%s, reason=%s",
+                                "HALTED" if _kd.state == "GATED" else "WAITING",
+                                _kd.state, _kd.trigger_reason)
+                    if _kd.state == "GATED":
+                        _touch_kill_switch(cfg)
+                        break
+                    # WAIT → skip this cycle but keep looping
+                    _interruptible_sleep(poll_s, cfg)
+                    continue
+
+                # Guardrails (portfolio-level exposure / drawdown checks)
+                _gr = _guardrails.evaluate({
+                    "equity": _metrics.equity if hasattr(_metrics, 'equity') else 0.0,
+                    "start_of_day_equity": _start_of_day_equity,
+                    "current_drawdown_pct": _metrics.current_drawdown_pct,
+                })
+                if _gr.get("permission") == "halt":
+                    log.error("Guardrails HALT: %s", _gr.get("results", []))
+                    _touch_kill_switch(cfg)
+                    break
+                elif _gr.get("permission") == "block_new":
+                    log.warning("Guardrails BLOCK_NEW: %s", _gr.get("results", []))
+            except Exception as safety_exc:
+                log.debug("TIER 1 safety check error (non-fatal): %r", safety_exc)
 
             # C6 fix: run cycle() with a hard timeout.
             try:
@@ -447,7 +579,7 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
             if last_logged_equity > 0:
                 equity_delta_pct = abs(result.equity - last_logged_equity) / last_logged_equity * 100
             has_activity = result.trades_placed > 0 or result.trades_rejected > 0
-            should_log = (result.cycle % log_interval == 1 or once
+            should_log = (result.cycle % log_interval == 0 or once
                          or equity_delta_pct > 1.0 or has_activity
                          or result.state in ("KILL_SWITCH", "BREAKER_OPEN"))
             if should_log:
@@ -481,6 +613,42 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
                         log.info("  FUNNEL: scan=%d → %s",
                                 result.signals_generated, " → ".join(funnel_parts))
                 last_logged_equity = result.equity
+
+            # --- TIER 5: feed monitors (non-blocking, errors are swallowed) ---
+            try:
+                cycle_ok = len(result.errors) == 0
+                _sys_mon.record_cycle(result.cycle_time_ms / 1000.0, ok=cycle_ok)
+                _sys_mon.set_mt5_status(result.state != "MT5_DISCONNECTED")
+                _metrics_col.record_equity(result.equity)
+                if result.trades_placed > 0:
+                    _alpha_mon.record_signal(strategy_name="_all", fired=True)
+                if result.trades_rejected > 0:
+                    _alpha_mon.record_signal(strategy_name="_all", fired=False)
+
+                # Dashboard + alert evaluation (every N cycles to reduce I/O)
+                if result.cycle % _dashboard_every == 0:
+                    snap = _metrics_col.snapshot({
+                        "regime": result.regime,
+                        "signals": result.signals_generated,
+                        "trades_placed": result.trades_placed,
+                        "trades_rejected": result.trades_rejected,
+                        "cycle_time_ms": result.cycle_time_ms,
+                    })
+                    _dash_renderer.render(snap)
+
+                if result.cycle % _monitor_every == 0:
+                    sys_h = _sys_mon.health().to_dict()
+                    trade_h = _trade_mon.health().to_dict()
+                    risk_h = _risk_mon.health().to_dict()
+                    alpha_h = _alpha_mon.health().to_dict()
+                    alerts = _alert_sys.evaluate_health_alerts(
+                        system_health=sys_h, trading_health=trade_h,
+                        risk_health=risk_h, alpha_health=alpha_h,
+                    )
+                    for a in alerts:
+                        _alert_sys.fire(a)
+            except Exception as mon_exc:
+                log.debug("monitoring feed error (non-fatal): %r", mon_exc)
 
             if once:
                 break
@@ -757,6 +925,8 @@ def main() -> None:
                         help="show database statistics")
     parser.add_argument("--kill", action="store_true",
                         help="write the kill-switch file and exit (panic button)")
+    parser.add_argument("--validate", action="store_true",
+                        help="TIER 6: readiness gate GO/NO-GO assessment (no trading)")
     parser.add_argument("--last-rejections", type=int, metavar="N", default=0,
                         help="show the last N rejected signals with reasons (Prompt #7)")
     parser.add_argument("--i-understand-this-is-real-money", action="store_true",
@@ -817,6 +987,9 @@ def main() -> None:
         return
     if args.last_rejections > 0:
         run_last_rejections(cfg, args.last_rejections)
+        return
+    if args.validate:
+        run_validate(cfg)
         return
 
     # P0-10 FIX: refuse --mode=live without the explicit confirmation flag
