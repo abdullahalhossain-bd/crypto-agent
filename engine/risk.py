@@ -262,9 +262,10 @@ class RiskManager:
         self.min_volume_ratio = float(cfg.get("min_volume_ratio", 0.5))
 
         # v2: Dynamic sizing
-        self.kelly_fraction = float(cfg.get("kelly_fraction", 0.5))
+        # P0-3 FIX: Raise confidence thresholds to institutional standards
+        # Was 0.65 (too low) → now 0.75 (minimum for live trading)
         self.confidence_high = float(cfg.get("confidence_high", 0.85))
-        self.confidence_medium = float(cfg.get("confidence_medium", 0.65))
+        self.confidence_medium = float(cfg.get("confidence_medium", 0.75))
         self.risk_high_conf = float(cfg.get("risk_high_conf", 0.015))
         self.risk_med_conf = float(cfg.get("risk_med_conf", 0.0075))
         self.risk_low_conf = float(cfg.get("risk_low_conf", 0.0035))

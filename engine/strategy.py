@@ -130,13 +130,15 @@ class SmaCrossoverStrategy(Strategy):
         slow = sma(df["close"], self.sma_slow)
         rsi_series = rsi(df["close"], self.rsi_period) if self.use_rsi_filter else None
 
-        # Crossover detection: compare last two valid rows
-        if fast.isna().iloc[-1] or slow.isna().iloc[-1]:
+        # Crossover detection: compare last two CLOSED rows (P0-2 FIX)
+        # CRITICAL: Use iloc[-2] and iloc[-3] for signal generation to avoid
+        # repainting. iloc[-1] is the current unclosed candle which can change.
+        if fast.isna().iloc[-2] or slow.isna().iloc[-2]:
             return self._hold(self._last_price(df), self._last_time(df),
                               "indicator warm-up")
 
-        fast_now, fast_prev = fast.iloc[-1], fast.iloc[-2]
-        slow_now, slow_prev = slow.iloc[-1], slow.iloc[-2]
+        fast_now, fast_prev = fast.iloc[-2], fast.iloc[-3]
+        slow_now, slow_prev = slow.iloc[-2], slow.iloc[-3]
 
         crossed_up = fast_prev <= slow_prev and fast_now > slow_now
         crossed_dn = fast_prev >= slow_prev and fast_now < slow_now
@@ -147,8 +149,9 @@ class SmaCrossoverStrategy(Strategy):
         last_price = self._last_price(df)
         last_time = self._last_time(df)
 
-        # RSI filter: only take BUY when not overbought; SELL when not oversold
-        rsi_val = rsi_series.iloc[-1] if rsi_series is not None else None
+        # RSI filter: only take BUY when not overbought; SELL when not oversold (P0-2 FIX)
+        # Use iloc[-2] for closed candle, not iloc[-1] (current candle)
+        rsi_val = rsi_series.iloc[-2] if rsi_series is not None and len(rsi_series) > 2 else None
         rsi_blocks_buy = self.use_rsi_filter and rsi_val is not None and rsi_val >= self.rsi_overbought
         rsi_blocks_sell = self.use_rsi_filter and rsi_val is not None and rsi_val <= self.rsi_oversold
 
@@ -327,16 +330,19 @@ class MomentumStrategy(Strategy):
         ema_f = ema(close, self.ema_fast)
         ema_s = ema(close, self.ema_slow)
         rsi_series = rsi(close, self.rsi_period)
-        last_price = float(close.iloc[-1])
+        # P0-2 FIX: Use closed candle for price (iloc[-2]), not current (iloc[-1])
+        last_price = float(close.iloc[-2]) if len(close) > 2 else float(close.iloc[-1])
         last_time = self._last_time(df)
 
-        if ema_f.isna().iloc[-1] or ema_s.isna().iloc[-1] or rsi_series.isna().iloc[-1]:
+        # P0-2 FIX: Check NA on closed candles (iloc[-2], iloc[-3])
+        if ema_f.isna().iloc[-2] or ema_s.isna().iloc[-2] or rsi_series.isna().iloc[-2]:
             return self._hold(last_price, last_time, "indicator warm-up")
 
-        ema_f_now = float(ema_f.iloc[-1])
-        ema_s_now = float(ema_s.iloc[-1])
-        rsi_now = float(rsi_series.iloc[-1])
-        rsi_prev = float(rsi_series.iloc[-2])
+        # P0-2 FIX: Use closed candle values for signal generation
+        ema_f_now = float(ema_f.iloc[-2])
+        ema_s_now = float(ema_s.iloc[-2])
+        rsi_now = float(rsi_series.iloc[-2])
+        rsi_prev = float(rsi_series.iloc[-3])
 
         # Factor 1: EMA bias
         ema_bull = ema_f_now > ema_s_now
@@ -363,7 +369,8 @@ class MomentumStrategy(Strategy):
         vol_strong = False
         if len(vol) > self.volume_period:
             try:
-                vol_now = float(vol.iloc[-1])
+                # P0-2 FIX: Use closed candle volume (iloc[-2])
+                vol_now = float(vol.iloc[-2])
                 vol_slice = vol.iloc[-self.volume_period - 1:-1]
                 if len(vol_slice) > 0:
                     # C14 fix: percentile-based threshold (70th pctile).
