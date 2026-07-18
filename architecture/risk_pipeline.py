@@ -110,6 +110,12 @@ class ValidationGate(RiskGate):
     name = "validation"
 
     def evaluate(self, ctx: RiskContext) -> RiskVerdict:
+        """Validation gate with OPPOSITE TRADE PREVENTION (P0-1 FIX).
+        
+        This gate now checks not only for duplicate positions but also
+        blocks opposite-direction trades on the same symbol to prevent
+        hedging unless explicitly enabled.
+        """
         sig = ctx.signal
         if sig is None:
             return RiskVerdict(self.name, False, "signal is None")
@@ -122,6 +128,30 @@ class ValidationGate(RiskGate):
                               f"insufficient bars ({len(ctx.df)} < 50)")
         if ctx.account_equity <= 0:
             return RiskVerdict(self.name, False, "equity <= 0")
+        
+        # P0-1 FIX: OPPOSITE TRADE PREVENTION
+        # Check if there's already an open position on this symbol
+        # If yes, block trades in the OPPOSITE direction
+        symbol = getattr(sig, "symbol", "")
+        new_action = getattr(sig, "action", None)
+        
+        if symbol and ctx.open_positions:
+            for pos in ctx.open_positions:
+                pos_symbol = pos.get("symbol", "")
+                pos_action = pos.get("action", "")  # "BUY" or "SELL"
+                
+                if pos_symbol == symbol and pos_action:
+                    # Found existing position on same symbol
+                    if new_action:
+                        new_action_str = new_action.name if hasattr(new_action, "name") else str(new_action)
+                        if pos_action.upper() != new_action_str.upper():
+                            # OPPOSITE DIRECTION - BLOCK IT
+                            return RiskVerdict(
+                                self.name, False,
+                                f"opposite trade blocked: existing {pos_action} position on {symbol}, "
+                                f"cannot open {new_action_str} (netting mode enabled)"
+                            )
+        
         return RiskVerdict(self.name, True, "OK")
 
 
@@ -688,6 +718,11 @@ class RiskPipeline:
         # FIX-RP-01: PortfolioGate moved to run AFTER SizingGate/SLTPGate so
         # it validates the REAL computed lots/risk/price, not a hardcoded
         # 2% guess made before sizing ever ran.
+        #
+        # P0-4 FIX: Add BoomCrashGate for synthetic indices (Boom/Crash)
+        # Placed after LiquidityGate to catch spike-specific risks
+        from trading_modules.boom_crash_gate import BoomCrashGate
+        
         self._gates: List[RiskGate] = [
             ValidationGate(),
             CorrelationGate(cfg.get("max_correlation", 0.85)),
@@ -697,6 +732,12 @@ class RiskPipeline:
                 min_volume=cfg.get("min_volume", 0.0),
                 max_spread_bps=cfg.get("max_spread_bps", 15.0),
                 auto_calibrate=cfg.get("liquidity_auto_calibrate", True),
+            ),
+            # P0-4 FIX: Boom/Crash specialized gate
+            BoomCrashGate(
+                min_spike_atr_multiple=cfg.get("boom_crash_atr_mult", 2.5),
+                spike_confirmation_bars=cfg.get("spike_confirm_bars", 3),
+                allow_counter_spike=cfg.get("allow_counter_spike", False)
             ),
             NewsBlackoutGate(),
             DrawdownGate(cfg.get("max_drawdown_pct", 15.0)),

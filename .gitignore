@@ -1,81 +1,35 @@
-# =========================================================================
-# .gitignore — Trading Bot
-# =========================================================================
-# P0 SECURITY FIX (Co-Founder Audit):
-# This .gitignore was previously empty, which allowed:
-#   - The CMC API key committed in config/config.yaml (line 43)
-#   - 75+ historical config snapshots in data/config_versions/ with the same key
-#   - SQLite WAL/SHM files and runtime DBs in git history
-#   - Python bytecode (__pycache__/*.pyc) polluting every folder
-# This file now blocks all of those categories from being tracked again.
-# =========================================================================
-
-# ─── Secrets & credentials ─────────────────────────────────────────────
-# NEVER commit real config with secrets. The canonical config.yaml is now
-# a TEMPLATE — secrets come from environment variables via the !ENV tag.
-config/config.yaml
-config/*.local.yaml
-config/secrets.yaml
-.env
-.env.*
-!.env.example
-
-# ─── Runtime data (regenerable — never version-control) ────────────────
-data/trading_bot.db
-data/trading_bot.db-shm
-data/trading_bot.db-wal
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/*.jsonl
-data/*.json
-data/heartbeat
-data/state.json
-data/seen_orders.json
-data/KILL_SWITCH
-data/snapshots/
-data/config_versions/
-data/trade_journal.jsonl
-data/alerts.jsonl
-data/shadow_decisions.jsonl
-data/trading_commits.jsonl
-data/institutional_memory.db
-
-# ─── Python bytecode & caches ──────────────────────────────────────────
+```
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-.tox/
+*.pyc
+*.pyo
+*.pyd
 
-# ─── Logs ──────────────────────────────────────────────────────────────
-logs/
+# Environment
+.env
+.env.local
+*.env.*
+
+# Logs
 *.log
 
-# ─── IDE / editor ──────────────────────────────────────────────────────
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# OS
 .DS_Store
-
-# ─── Quarantine (auto-quarantined stale files from main.py C10 fix) ───
-legacy/_quarantine_runtime/
-
-# ─── OS junk ───────────────────────────────────────────────────────────
 Thumbs.db
-desktop.ini
-
-# ─── Build / dist ──────────────────────────────────────────────────────
-build/
-dist/
-*.tar.gz
-!download/*.tar.gz
+```
