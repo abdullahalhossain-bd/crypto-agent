@@ -273,7 +273,11 @@ class TradingBot:
         # net distinct from the per-trade RiskPipeline gates. If ANY breaker is
         # OPEN, the entire cycle is skipped.
         from architecture.circuit_breaker import CircuitBreakerCoordinator
-        self.breakers = CircuitBreakerCoordinator(config, bus=self._bus)
+        self.breakers = CircuitBreakerCoordinator(
+            config,
+            bus=self._bus,
+            ignore_broker_disconnect=(self._mode == "demo"),
+        )
 
         # TIER 1: per-symbol manipulation detector
         from engine.manipulation_detector import ManipulationDetector
@@ -434,11 +438,24 @@ class TradingBot:
                     return False
                 self.exchange = create_exchange("mt5", **mt5_cfg)
                 if not self.exchange.connect():
-                    log.error("TradingBot: MT5 connection failed (mode=%s)", self._mode)
-                    self.state_machine.transition(BotState.EMERGENCY,
-                                                 reason="exchange connection failed")
-                    return False
-                log.info("TradingBot: connected to MT5 (mode=%s)", self._mode)
+                    if self._mode == "demo":
+                        log.warning("TradingBot: MT5 connection failed (mode=%s) — falling back to paper adapter", self._mode)
+                        self.exchange = create_exchange("paper")
+                        if not self.exchange.connect():
+                            log.error("TradingBot: paper adapter fallback connect failed")
+                            self.state_machine.transition(BotState.EMERGENCY,
+                                                         reason="exchange connection failed")
+                            return False
+                        log.info("TradingBot: demo mode running in paper fallback mode")
+                    else:
+                        log.error("TradingBot: MT5 connection failed (mode=%s)", self._mode)
+                        self.state_machine.transition(BotState.EMERGENCY,
+                                                     reason="exchange connection failed")
+                        return False
+                if getattr(self.exchange, "name", "") == "paper":
+                    log.info("TradingBot: connected to paper fallback adapter (mode=%s)", self._mode)
+                else:
+                    log.info("TradingBot: connected to MT5 (mode=%s)", self._mode)
 
                 # Review Gap 3: post-connect account/mode cross-check.
                 # Verify the connected account matches the declared mode.
@@ -451,7 +468,9 @@ class TradingBot:
                     # the server name. If --mode=demo but server doesn't say
                     # "Demo", warn loudly and refuse to continue.
                     server_name = getattr(acct, "server", "") or ""
-                    if self._mode == "demo" and "demo" not in server_name.lower():
+                    if getattr(self.exchange, "name", "") == "paper":
+                        log.info("TradingBot: paper fallback adapter detected — skipping MT5 mode/server verification")
+                    elif self._mode == "demo" and "demo" not in server_name.lower():
                         log.error("TradingBot: MODE MISMATCH — --mode=demo but "
                                   "connected to server '%s' which doesn't look "
                                   "like a demo server. Refusing to trade — check "
@@ -496,14 +515,23 @@ class TradingBot:
         # keyword). Validate against what the exchange actually reports
         # where possible, and hard-fail rather than silently idle.
         if not self._symbols:
-            log.error("TradingBot: 0 symbols loaded after _load_symbols() — "
-                      "refusing to go LIVE. Check config.yaml `symbols` "
-                      "against what's actually visible in the MT5 terminal's "
-                      "MarketWatch (or check exclusion keywords in "
-                      "_load_symbols()).")
-            self.state_machine.transition(BotState.EMERGENCY,
-                                         reason="no_symbols_loaded")
-            return False
+            if self._mode == "demo" and getattr(self.exchange, "name", "") == "paper":
+                log.warning("TradingBot: no symbols loaded from broker — using configured fallback symbols")
+                configured = [
+                    s["name"]
+                    for s in self._cfg.get("symbols", [])
+                    if isinstance(s, dict) and "name" in s
+                ]
+                self._symbols = configured
+            else:
+                log.error("TradingBot: 0 symbols loaded after _load_symbols() — "
+                          "refusing to go LIVE. Check config.yaml `symbols` "
+                          "against what's actually visible in the MT5 terminal's "
+                          "MarketWatch (or check exclusion keywords in "
+                          "_load_symbols()).")
+                self.state_machine.transition(BotState.EMERGENCY,
+                                             reason="no_symbols_loaded")
+                return False
         if self._mode != "paper" and self.exchange is not None:
             try:
                 broker_symbols = set(self.exchange.get_symbols_by_pattern(["*"]))
@@ -650,7 +678,14 @@ class TradingBot:
 
     def _load_symbols(self) -> List[str]:
         cfg_syms = self._cfg.get("symbols", [])
-        names = [s["name"] for s in cfg_syms if isinstance(s, dict) and "name" in s]
+        names = []
+        for s in cfg_syms:
+            if isinstance(s, dict) and "name" in s:
+                name = str(s["name"]).strip()
+                if name:
+                    names.append(name)
+            elif isinstance(s, str) and s.strip():
+                names.append(s.strip())
         if self._cfg.get("symbols_auto_load", True) and self.exchange is not None:
             try:
                 patterns = self._cfg.get("symbol_patterns", [

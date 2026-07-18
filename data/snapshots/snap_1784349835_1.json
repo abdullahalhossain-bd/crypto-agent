@@ -1,0 +1,21 @@
+{
+  "snapshot_id": "snap_1784349835_1",
+  "timestamp": "2026-07-18T04:43:55.092726+00:00",
+  "cycle": 1,
+  "portfolio": {
+    "initial_capital": 10000.0,
+    "balance": 9971.51,
+    "realized_pnl": 0.0,
+    "peak_equity": 10000.0,
+    "max_drawdown": 28.48999999999978,
+    "max_drawdown_pct": 0.2848999999999978
+  },
+  "risk_state": {},
+  "open_positions": [],
+  "equity": 9971.51,
+  "peak_equity": 10000.0,
+  "bot_state": "SHUTDOWN",
+  "config_version": "",
+  "version": "1.0",
+  "notes": "clean shutdown: user requested"
+}

@@ -1,0 +1,226 @@
+# =============================================================================
+# INSTITUTIONAL CRYPTO & FUTURES TRADING SYSTEM CONFIGURATION
+# =============================================================================
+# Canonical config for the crypto/futures trading agent.
+# Copy this file and customize for your environment.
+# NEVER commit real credentials - use environment variables for secrets.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# OPERATING MODE
+# -----------------------------------------------------------------------------
+# Valid modes: 'demo', 'live'
+# - demo: Paper trading with real market data, no real money
+# - live: Real capital at risk (requires MT5_PASSWORD env var)
+mode: demo
+
+# Starting capital for performance tracking
+capital: 10000.0
+
+# Symbols to trade (auto-load from broker if symbols_auto_load=true)
+# Spot + perpetual futures pairs
+symbols:
+  - "BTCUSD"
+  - "ETHUSD"
+  - "SOLUSD"
+  - "BNBUSD"
+  - "XRPUSD"
+  - "BTCUSDT.P"    # BTC perpetual futures
+  - "ETHUSDT.P"    # ETH perpetual futures
+
+# Auto-discover symbols from broker MarketWatch
+# BUG FIX: was `true`, which could silently pull in unwanted symbols and
+# conflict with the explicit crypto/futures list above. Set to false so the
+# `symbols` list above is authoritative.
+symbols_auto_load: false
+
+# -----------------------------------------------------------------------------
+# BROKER / EXCHANGE CONNECTION (MT5)
+# -----------------------------------------------------------------------------
+# NOTE / MISMATCH WARNING: this block connects to a standard MT5 (CFD/FX
+# terminal) account. MT5 brokers generally do NOT support USDT-margined
+# perpetual futures symbols like "BTCUSDT.P" or expose funding-rate /
+# open-interest data the way Binance/Bybit do. If real perpetual-futures
+# trading (with funding rates, USDT-margin, etc.) is the goal, this agent
+# needs a separate exchange connector (e.g. Binance/Bybit REST+WebSocket
+# API with its own API key/secret), not the mt5 block below. Keep this mt5
+# block only if trading MT5's own crypto CFD symbols (e.g. "BTCUSD").
+#
+# SECURITY: password must be set via MT5_PASSWORD environment variable.
+# Never hardcode credentials in this file. Use !ENV or your loader's
+# environment-substitution mechanism.
+mt5:
+  login: 32311586                    # Your MT5 account number
+  password: "${MT5_PASSWORD}"         # Set via environment variable only
+  server: "MetaQuotes-Demo"           # Broker server name
+  terminal_path: ""                   # Optional: path to terminal64.exe
+  timeout_ms: 5000                    # Connection timeout
+  reconnect_attempts: 5               # Reconnection attempts on failure
+  reconnect_delay_s: 2.0              # Delay between reconnection attempts
+
+# -----------------------------------------------------------------------------
+# RISK MANAGEMENT (12-gate pipeline)
+# -----------------------------------------------------------------------------
+risk:
+  # BUG FIX: risk_per_trade (fixed-fractional) and kelly_fraction (dynamic
+  # Kelly sizing) were both defined with no stated precedence, so the engine
+  # could apply both and double-constrain (or silently conflict on) position
+  # size. sizing_method makes the precedence explicit:
+  #   "kelly_capped"     -> size via Kelly, but hard-cap at risk_per_trade
+  #   "fixed_fractional"  -> ignore kelly_fraction, always use risk_per_trade
+  #   "kelly"             -> pure Kelly sizing, ignore risk_per_trade
+  sizing_method: "kelly_capped"
+
+  # Base risk per trade (0.01 = 1% of equity) — kept conservative for
+  # leveraged crypto futures where volatility is much higher than FX.
+  # Acts as a hard cap when sizing_method is "kelly_capped".
+  risk_per_trade: 0.005
+
+  # Maximum daily loss before hard halt
+  max_daily_loss: 0.05
+
+  # Maximum concurrent open positions
+  max_open_trades: 6
+
+  # Pause after N consecutive losses
+  max_consecutive_losses: 3
+
+  # Minimum seconds between trades on same symbol
+  cooldown_s: 60.0
+
+  # Maximum portfolio drawdown before halt
+  max_drawdown_pct: 15.0
+
+  # Reject if ATR% exceeds this threshold (crypto is volatile, wider band)
+  max_atr_pct: 0.08
+
+  # Reject if spread exceeds this (basis points)
+  max_spread_bps: 20.0
+
+  # Kelly fraction for dynamic sizing
+  kelly_fraction: 0.20
+
+  # Stop-loss / take-profit distance in ATR multiples
+  sl_atr_multiple: 1.5
+  tp_atr_multiple: 2.5
+
+  # Maximum correlation allowed with existing positions
+  # (BTC/ETH/SOL are highly correlated — keep this tight)
+  max_correlation: 0.75
+
+  # Blocked market regimes (trading halted in these conditions)
+  blocked_regimes:
+    - "crisis"
+    - "transition"
+    - "chop"
+    - "unknown"
+
+  # Liquidity gate auto-calibration
+  liquidity_auto_calibrate: true
+
+  # -------------------------------------------------------------------------
+  # FUTURES-SPECIFIC RISK CONTROLS
+  # -------------------------------------------------------------------------
+  futures:
+    # Maximum leverage allowed per position
+    max_leverage: 5
+
+    # Minimum maintenance margin ratio before forced-reduce warning
+    min_margin_ratio: 0.15
+
+    # Hard liquidation buffer — close position if margin ratio falls below this
+    liquidation_buffer_ratio: 0.08
+
+    # Reject new entries if funding rate exceeds this (absolute, per 8h)
+    max_funding_rate_abs: 0.0015
+
+    # Avoid opening new positions within N minutes of funding settlement
+    funding_settlement_avoid_min: 15
+
+    # Maximum notional exposure as multiple of capital
+    max_notional_multiple: 3.0
+
+# -----------------------------------------------------------------------------
+# RUNTIME SETTINGS
+# -----------------------------------------------------------------------------
+runtime:
+  poll_interval_s: 5.0
+  heartbeat_timeout_s: 120.0   # was 60.0 — must exceed cycle_timeout_s below
+  kill_switch_file: "data/KILL_SWITCH"
+  state_file: "data/state.json"
+  max_consecutive_errors: 10
+  idempotency_file: "data/seen_orders.json"
+  heartbeat_file: "data/heartbeat"
+  # BUG FIX: cycle_timeout_s must be < heartbeat_timeout_s, otherwise a
+  # normal-length cycle can trigger a false "agent is dead" halt.
+  cycle_timeout_s: 90.0
+  shutdown_timeout_s: 30.0
+
+# -----------------------------------------------------------------------------
+# STRATEGY PARAMETERS
+# -----------------------------------------------------------------------------
+strategy:
+  primary_timeframe: "M15"
+  mtf_enabled: true
+  mtf_timeframes:
+    - "H1"
+    - "H4"
+    - "D1"
+
+  indicators:
+    atr_period: 14
+    rsi_period: 14
+    ema_fast: 9
+    ema_slow: 21
+
+  # Crypto/futures-specific signal inputs
+  crypto_signals:
+    funding_rate_enabled: true
+    open_interest_enabled: true
+    long_short_ratio_enabled: true
+    basis_spread_enabled: true      # spot vs futures basis
+
+# -----------------------------------------------------------------------------
+# AI/ML SETTINGS
+# -----------------------------------------------------------------------------
+ai:
+  llm_enabled: false
+  min_confidence: 0.65
+  bayesian_enabled: true
+  conformal_alpha: 0.10
+
+# -----------------------------------------------------------------------------
+# DATA VALIDATION
+# -----------------------------------------------------------------------------
+data:
+  min_bars_required: 100
+  max_data_age_s: 180          # tighter than FX — crypto moves faster
+  validate_ohlcv: true
+
+# -----------------------------------------------------------------------------
+# EXECUTION SETTINGS
+# -----------------------------------------------------------------------------
+execution:
+  execution_mode: paper
+  enable_slicing: true
+  max_slippage_bps: 15          # crypto spreads/slippage run wider than FX
+  adaptive_speed: true
+
+# -----------------------------------------------------------------------------
+# LOGGING & MONITORING
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO
+  file_enabled: true
+  file_path: "logs/trading.log"
+  max_size_mb: 100
+  backup_count: 5
+  timestamps: true
+
+# -----------------------------------------------------------------------------
+# DASHBOARD SETTINGS
+# -----------------------------------------------------------------------------
+dashboard:
+  enabled: true
+  port: 8050
+  refresh_interval_s: 5.0

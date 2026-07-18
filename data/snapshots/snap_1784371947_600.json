@@ -1,0 +1,21 @@
+{
+  "snapshot_id": "snap_1784371947_600",
+  "timestamp": "2026-07-18T10:52:27.173602+00:00",
+  "cycle": 600,
+  "portfolio": {
+    "initial_capital": 10000.0,
+    "balance": 9913.804135,
+    "realized_pnl": -3.5399999999999636,
+    "peak_equity": 10000.0,
+    "max_drawdown": 95.82930000000306,
+    "max_drawdown_pct": 0.009582930000000305
+  },
+  "risk_state": {},
+  "open_positions": [],
+  "equity": 9906.29,
+  "peak_equity": 10000.0,
+  "bot_state": "LIVE",
+  "config_version": "",
+  "version": "1.0",
+  "notes": "periodic snapshot at cycle 600"
+}

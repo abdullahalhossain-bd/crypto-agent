@@ -1,0 +1,709 @@
+# =========================================================================
+#  Trading Bot — Global Configuration
+#  This single file drives the entire pipeline (risk, symbols, strategy,
+#  execution, monitoring). Day-7 production hardening reads from here.
+# =========================================================================
+
+# =========================================================================
+#  MT5 Connection (PRIMARY BROKER) — Deriv Demo
+# =========================================================================
+#  How to get Deriv MT5 demo credentials:
+#    1. Register a free account at https://deriv.com
+#    2. Dashboard → MT5 → "+ Add or register a demo account"
+#    3. Choose "Deriv MT5 Demo" (server: Deriv-Demo)
+#    4. Copy the login (10-digit number) and password from the dashboard
+#    5. Also install MetaTrader 5 terminal from https://www.metatrader5.com/
+#       and log in once with the same credentials so the terminal caches
+#       the server certificate.
+#  6. Paste your credentials below — keep this file private.
+# =========================================================================
+mt5:
+  login: 32311586             # Deriv MT5 demo login
+  # Phase 13: password loaded from MT5_PASSWORD env var (config_loader.py)
+  # Set it with: export MT5_PASSWORD="your_password"
+  # NEVER commit real passwords to config.yaml.
+  password: ""                # left empty — config_loader falls back to env var
+  server: "Deriv-Demo"        # Deriv MT5 demo server
+  terminal_path: "C:\\Program Files\\MetaTrader 5 Terminal\\terminal64.exe"
+  timeout_ms: 5000
+  reconnect_attempts: 5
+  reconnect_delay_s: 2
+  # PERF FIX: fetch_candles(symbol, "M15", 500) was being re-fetched in
+  # full over MT5 IPC for every symbol on EVERY cycle (every poll_interval_s
+  # = 5s), even though M15 bars only close every 900s. Measured: ~325ms
+  # per call x 100 symbols, serialized = the ~32s cycle time you saw.
+  # Now cached per (symbol, timeframe, count) for this many seconds —
+  # cycle 1 (cold cache) still pays the full IPC cost, but subsequent
+  # cycles within the TTL reuse the cached data and should be dramatically
+  # faster. The in-progress (still-forming) last bar can be up to this
+  # many seconds stale. Set to 0 to disable caching (always fetch fresh).
+  candle_cache_ttl_s: 60
+
+# --- CoinMarketCap API (used by paper-trading engine + price fallback) ---
+# P0 SECURITY FIX (Co-Founder Audit): the previous hardcoded key
+#   "REDACTED_LEAKED_KEY_ROTATE_AT_CMC_PORTAL"
+# was committed in plaintext and propagated to 75+ historical config
+# snapshots in data/config_versions/. That key MUST be rotated at
+# https://pro.coinmarketcap.com/account/ — assume it is compromised.
+# The new key is loaded from the CMC_API_KEY environment variable via the
+# !ENV tag (config_loader.py:62). Set it in .env:
+#     CMC_API_KEY=your_rotated_key_here
+cmc_api_key: !ENV CMC_API_KEY, optional
+
+# --- cTrader connection (DEPRECATED — kept for future use) ---
+# Register at https://openapi.ctrader.com/ if you want to switch later.
+ctrader:
+  client_id: ""
+  client_secret: ""
+  access_token: ""
+  account_id: ""
+  host: "demo.ctrader.com"
+  port: 5036
+
+# --- Symbols & timeframes ----------------------------------------------
+# v6.7: Auto-load ALL symbols from Deriv MT5 (crypto + forex + synthetics)
+symbols_auto_load: true
+# Patterns to match when auto-loading (case-insensitive substring match)
+symbol_patterns:
+  - "BTC"
+  - "ETH"
+  - "XRP"
+  - "LTC"
+  - "SOL"
+  - "BNB"
+  - "DOGE"
+  - "ADA"
+  - "DOT"
+  - "AVAX"
+  - "EUR"
+  - "GBP"
+  - "USD"
+  - "JPY"
+  - "AUD"
+  - "CAD"
+  - "CHF"
+  - "NZD"
+  - "XAU"
+  - "XAG"
+  - "GOLD"
+  - "SILVER"
+  - "Volatility"
+  - "Boom"
+  - "Crash"
+  - "Step"
+  - "Jump"
+  - "Reset"
+
+symbols:
+  - name: BTCUSD
+    timeframe: M15
+    magic: 100001
+    min_volume: 0.01
+    max_volume: 5.0
+  - name: ETHUSD
+    timeframe: M15
+    magic: 100002
+    min_volume: 0.01
+    max_volume: 5.0
+  # Auto-loaded symbols will be added at runtime from MT5
+
+# Default lookback for historical candle fetch
+data:
+  lookback_candles: 1000
+  # Timezone the bot assumes MT5 server is in (UTC by default on most brokers)
+  server_timezone: UTC
+
+# --- Strategy parameters -------------------------------------------------
+strategy:
+  type: momentum           # v6.3: momentum (more signals) | sma_crossover | rsi_reversion
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  momentum_lookback: 5
+  volume_period: 20
+  min_factors: 3           # 3 of 4 factors must agree (lower = more signals)
+  # SMA crossover params (used if type: sma_crossover)
+  sma_fast: 20
+  sma_slow: 50
+  use_rsi_filter: true
+  min_strength: 0.08          # FIX: strength scale is 0.06-0.42, allow 1-agent signals too
+
+# --- Strategy Pool (Day 8-10) — multi-strategy engine -------------------
+strategy_pool:
+  # If non-empty, the runner uses these instead of the single `strategy:` block.
+  # Each entry maps a strategy name (from the registry) to its params.
+  enabled:
+    - name: sma_crossover
+      params: { sma_fast: 20, sma_slow: 50, use_rsi_filter: true, min_strength: 0.4 }
+    - name: donchian_breakout
+      params: { window: 20, min_strength: 0.0 }
+    - name: mean_reversion
+      params: { bb_period: 20, bb_std: 2.0, rsi_period: 14 }
+  # Run strategies in parallel (threading)
+  parallel: false
+
+# --- Portfolio Engine (Day 11-13) ---------------------------------------
+portfolio:
+  max_gross_exposure: 2.0           # in risk units (fraction of equity)
+  max_net_exposure: 1.0
+  correlation_threshold: 0.7        # penalise symbols whose |corr| exceeds this
+  correlation_lookback: 500
+
+# --- ML Filter Layer (Day 20-22) ----------------------------------------
+ml:
+  enabled: true
+  backend: lightgbm                 # lightgbm | xgboost | logistic
+  model_path: data/ml_model.pkl
+  min_confidence: 0.55              # veto signals below this
+  max_confidence: 0.95              # cap (avoid overconfidence)
+  # Walk-forward training
+  train:
+    n_folds: 5
+    train_ratio: 0.7
+    forward_horizon: 5
+    forward_threshold: 0.001        # 10 bps
+
+# --- Regime + Adaptive Allocation (Day 23-25) ---------------------------
+regime:
+  atr_period: 14
+  baseline_period: 50
+  trend_window: 20
+  high_vol_threshold: 1.5
+  calm_threshold: 0.7
+  trend_strength_threshold: 0.6
+  allocator:
+    min_regime_confidence: 0.3
+    min_multiplier: 0.1
+    high_vol_global_factor: 0.5
+
+# --- Observability (Day 28-29) ------------------------------------------
+observability:
+  decision_trace_path: data/decision_traces.jsonl
+  metrics_path: data/metrics.jsonl
+  dashboard_path: data/dashboard.html
+  dashboard_refresh_s: 30
+
+# --- Capital Tiers (Day 31-33) ------------------------------------------
+capital_tiers:
+  state_path: data/capital_tier.json
+  fractions:
+    PAPER: 0.0
+    MICRO: 0.005
+    LIMITED: 0.025
+    FULL: 0.10
+  promotion_criteria:
+    min_cycles_at_tier: 500
+    min_sharpe: 0.5
+    max_drawdown_pct: 0.03
+    max_live_paper_divergence_pct: 0.01
+    max_kill_switch_events: 0
+    min_win_rate: 0.40
+
+# --- Guardrails (Day 34-36) ---------------------------------------------
+guardrails:
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.15
+  max_gross_exposure: 2.0
+  max_net_exposure: 1.0
+  max_per_symbol_exposure: 0.5
+  max_correlated_exposure: 1.5
+  correlation_threshold: 0.6
+  anomaly_kill_switch_score: 0.8
+
+# --- Shadow Mode (Day 37-40) --------------------------------------------
+shadow_mode:
+  enabled: true
+  log_path: data/shadow_decisions.jsonl
+
+# --- Alpha Research (Day 41-55) -----------------------------------------
+research:
+  feature_factory:
+    price_windows: [1, 3, 5, 10, 20, 50]
+    vol_windows: [5, 10, 20, 50]
+  hypothesis_generator:
+    max_per_method: 50
+    random_seed: 42
+  evaluation:
+    min_sharpe: 0.5
+    min_win_rate: 0.45
+    max_drawdown_pct: 0.15
+    min_monte_carlo_pass_rate: 0.6
+    min_regime_pass_count: 2
+    n_walk_forward_folds: 5
+    n_monte_carlo_runs: 50
+  scorer:
+    weights:
+      sharpe: 0.30
+      drawdown: 0.15
+      stability: 0.20
+      regime_robustness: 0.20
+      execution_sensitivity: 0.10
+      capacity_score: 0.05
+
+# --- Strategy Factory (Day 56-70) --------------------------------------
+factory:
+  version_store_path: data/strategy_versions.json
+  ci:
+    min_sharpe: 0.5
+    min_win_rate: 0.45
+    max_drawdown_pct: 0.15
+    min_regime_pass_count: 2
+    min_net_sharpe: 0.2
+  decay_detector:
+    baseline_window: 500
+    recent_window: 100
+    retirement_threshold: 0.4
+    watch_threshold: 0.65
+  auto_retirement:
+    max_drawdown_pct: 0.10
+    min_regime_affinity: 0.2
+    regime_mismatch_cycles: 50
+
+# --- Monitoring Stack (Day 71-80) --------------------------------------
+monitoring:
+  system:
+    p95_threshold_ms: 2000
+    p99_threshold_ms: 5000
+  risk:
+    max_var_pct: 0.04
+    max_correlation: 0.85
+    max_concentration_hhi: 0.5
+  alpha:
+    drift_threshold: 0.3
+    ml_calibration_window: 200
+  alerts:
+    log_path: data/alerts.jsonl
+    default_cooldown_s: 600
+    critical_cooldown_s: 300
+    escalation_cycles: 5
+
+# --- Capital Scaling (Day 81-90) ---------------------------------------
+scaling:
+  capital_scaler:
+    min_fraction: 0.001
+    max_fraction: 0.10
+    scale_up_step: 0.005
+    scale_down_factor: 0.5
+    rolling_window: 500
+    min_sharpe_to_scale: 1.0
+    max_dd_volatility: 0.05
+    max_execution_slippage_bps: 15.0
+    max_divergence_pct: 0.01
+  allocation_optimizer:
+    max_weight_per_strategy: 0.40
+    min_weight: 0.05
+    correlation_penalty_threshold: 0.7
+
+# --- Institutional Entry Gate (v5.4) -----------------------------------
+# The "should I trade now?" brain. Rejects weak setups BEFORE they reach
+# the broker. Outputs BUY / SELL / WAIT / SKIP.
+institutional_entry:
+  min_rr: 2.0                  # minimum reward:risk ratio
+  strong_rr: 3.0               # R:R for full marks
+  spread_max_multiple: 2.0     # reject if spread > 2x normal
+  atr_low_multiple: 0.3        # reject if ATR < 0.3x baseline (dead market)
+  atr_high_multiple: 3.0       # reject if ATR > 3x baseline (chaotic market)
+  news_blackout_minutes: 15    # no trade within ±15 min of high-impact news
+  range_middle_skip_pct: 0.30  # skip if price in middle 30% of range AND ranging
+  low_liquidity_sessions: ["sydney", "off"]
+  atr_period: 14
+  ema_fast: 20
+  ema_slow: 50
+  adx_period: 14
+  adx_trend_threshold: 18.0
+  volume_period: 20
+  volume_min_ratio: 1.5
+  key_level_atr_multiple: 0.5  # price within 0.5 ATR of a swing/PDH/PDL = key level
+  swing_lookback: 20
+  range_lookback: 50
+  # Score thresholds (0-100)
+  threshold_strong: 85.0       # A+ setup
+  threshold_acceptable: 70.0   # take the trade
+  threshold_weak: 55.0         # WEAK — flag but skip by default
+
+# --- v5.6 Institutional Confluence Modules -----------------------------
+# Each module is a confluence contributor — none emits BUY/SELL alone.
+# The InstitutionalEntryGate combines them into a final 4-decision output.
+volume_profile:
+  num_bins: 100
+  value_area_pct: 0.70         # 70% value area (industry standard)
+  hvn_threshold: 1.5           # bin volume >= 1.5x mean = HVN
+  lvn_threshold: 0.5           # bin volume <= 0.5x mean = LVN
+  min_rows: 30
+  rejection_wick_ratio: 0.5
+  fast_move_body_ratio: 0.6
+  binning_method: "range"      # "range" (accurate) or "close" (fast)
+
+vwap:
+  use_session_reset: true
+  session_start_hour_utc: 0
+  band_multipliers: [1.0, 2.0]
+  rejection_wick_ratio: 0.4
+  atr_period: 14
+
+fibonacci:
+  swing_window: 10
+  atr_period: 14
+  confluence_atr_multiple: 0.3 # |distance| <= 0.3 ATR = at level
+  cluster_threshold_atr: 0.5   # adjacent levels within 0.5 ATR = cluster
+
+wyckoff:
+  consolidation_lookback: 50
+  consolidation_atr_threshold: 4.0
+  breakout_atr_multiple: 0.2
+  volume_spike_ratio: 1.8
+  body_atr_ratio: 0.8
+  atr_period: 14
+
+fake_breakout:
+  lookback: 5
+  volume_min_ratio: 1.5
+  retest_lookback: 5
+  retest_atr_tolerance: 0.3
+  atr_period: 14
+
+ema_ribbon:
+  periods: [5, 8, 13, 21, 34, 55, 89, 144]   # Fibonacci-tuned
+  slope_lookback: 10
+  compression_threshold: 0.02
+
+cross_asset:
+  # Relationships: (asset_a, asset_b, "positive" | "inverse")
+  relationships:
+    - [BTCUSD, DXY,    inverse]
+    - [BTCUSD, GOLD,   positive]
+    - [BTCUSD, NASDAQ, positive]
+    - [BTCUSD, ETHUSD, positive]
+    - [ETHUSD, DXY,    inverse]
+    - [EURUSD, DXY,    inverse]
+    - [GBPUSD, DXY,    inverse]
+    - [XAUUSD, DXY,    inverse]
+  trend_lookback: 20
+  min_strength_pct: 0.3
+
+trade_cooldown:
+  state_path: data/cooldown.json
+  loss_streak_threshold: 3       # 3 consecutive losses → 60 min pause
+  loss_streak_pause_minutes: 60
+  daily_loss_limit_usd: 500.0
+  symbol_loss_cooldown_minutes: 30
+  min_minutes_between_trades: 5
+
+dynamic_sizing:
+  max_risk_pct: 0.03             # never risk more than 3% of equity per trade
+  min_risk_usd: 10.0
+  kelly_fraction: 0.5            # half-Kelly
+  max_drawdown_pct: 0.15         # halt new trades if drawdown > 15%
+  # Grade → multiplier (overrides default)
+  grade_multipliers:
+    "A+": 1.5
+    "A":  1.0
+    "B":  0.5
+    "C":  0.0
+    "F":  0.0
+
+trade_journal:
+  path: data/trade_journal.jsonl
+  min_trades_for_stats: 20
+
+# --- v5.7 Advanced Institutional Modules -------------------------------
+auction_market_theory:
+  ib_bars: 4                       # bars in Initial Balance (4 = 1 hour on M15)
+  value_area_pct: 0.70
+  va_rejection_wick_ratio: 0.5
+  single_print_window: 1
+  excess_atr_multiple: 0.5
+  atr_period: 14
+  session_start_hour_utc: 0
+
+quant_factors:
+  zscore_window: 50
+  hurst_max_lag: 20
+  hmm_n_states: 3
+  hmm_n_iter: 50
+  kalman_process_var: 0.00001
+  kalman_measurement_var: 0.001
+  bayesian_prior_alpha: 10
+  bayesian_prior_beta: 10
+
+monte_carlo:
+  n_runs: 10000
+  n_trades: 100
+  keep_curves: 50
+  ruin_threshold_pct: 0.5          # equity below 50% of initial = ruin
+
+explainable_ai:
+  enabled: true                    # generate explanation for every trade
+
+ensemble_voting:
+  agreement_threshold: 0.6         # 60% of weighted votes must agree
+  min_confidence: 0.55
+  track_accuracy: true
+  accuracy_window: 50
+
+liquidation_heatmap:
+  leverages: [10, 25, 50, 100]
+  swing_window: 10
+  cluster_atr_multiple: 0.5
+  min_intensity: 0.1
+  atr_period: 14
+
+cme_gap:
+  min_gap_pct: 0.5
+  weekend_only: true
+
+risk_dashboard:
+  var_confidence: 0.95
+  var_lookback: 250
+  max_var_pct: 0.04                # 4% 1-day VaR warning
+  max_drawdown_pct: 0.15
+  max_gross_exposure: 2.0
+  max_hhi: 0.5
+  max_portfolio_heat_pct: 0.06
+  risk_free_rate: 0.0
+
+# --- Candlestick Confluence Layer (Day 126-140) -----------------------
+# Inspired by The Candlestick Trading Bible. ALL of these are feature
+# sources; none of them emit BUY/SELL directly. The confluence engine
+# combines them, the ML layer learns from them.
+candlestick:
+  pattern_detector:
+    min_wick_ratio: 0.6
+    min_body_ratio: 0.05
+    min_engulf_ratio: 1.0
+    atr_period: 14
+    volume_period: 20
+  rejection_strength:
+    atr_period: 14
+    volume_period: 20
+  market_state:
+    trend_window: 20
+    atr_period: 14
+    baseline_period: 50
+    trend_slope_threshold: 0.6
+    range_autocorr_threshold: -0.1
+    choppy_atr_ratio: 1.8
+  confluence:
+    weights:
+      pattern: 0.20
+      trend: 0.15
+      support_resistance: 0.15
+      moving_average: 0.10
+      volume: 0.10
+      liquidity: 0.05
+      rejection: 0.10
+      multi_timeframe: 0.10
+      ml_score: 0.05
+    thresholds:
+      A_plus: 75.0
+      A: 60.0
+      B: 45.0
+      C: 30.0
+  trade_quality:
+    min_rr_for_a_plus: 2.5
+    min_rr_for_a: 2.0
+    min_rr_for_b: 1.5
+    min_rr_for_c: 1.0
+    min_confluence_for_a_plus: 75.0
+    news_blackout_minutes: 15
+  entry_style:
+    high_vol_threshold: 1.8
+    low_vol_threshold: 0.8
+    aggressive_stop_atr: 1.5
+    conservative_stop_atr: 2.5
+  pattern_decay:
+    baseline_window: 200
+    recent_window: 50
+    min_samples: 30
+    downweight_threshold: 0.5
+    retire_threshold: 0.3
+  multi_timeframe:
+    weights:
+      D1: 0.40
+      H4: 0.30
+      H1: 0.20
+      M15: 0.10
+    trend_window: 20
+  pattern_statistics:
+    path: data/pattern_statistics.json
+    min_touches: 2
+
+# --- Universe pre-filter (Co-Founder Audit — production hardening) -------
+# Before AI agents run, the bot pre-screens symbols to drop ones that would
+# obviously fail liquidity/spread/volatility gates. This saves CPU (feature
+# engineering + 5 AI agents) and stops per-symbol REJECTED logs from
+# flooding the console. The top N most-tradable symbols proceed to AI.
+universe_filter:
+  enabled: true              # set false to process ALL symbols (legacy behavior)
+  max_size: 20               # how many survivors go to AI analysis
+  max_spread_bps: 15.0       # reject symbols with wider spread than this
+  min_volume_pctile: 0.20    # floor = 20th pctile of last 20 bars × 0.5
+  drop_variant_suffixes: true   # drop AUDNZDmicro if AUDNZD exists
+  variant_suffixes:             # what counts as a "variant" suffix
+    - "micro"
+    - "mini"
+    - ".conv"
+    - "c"
+    - "pro"
+
+# --- LLM augmentation (Co-Founder Audit — agents/ pipeline integration) -
+# When enabled, the rule-based MultiAgentCoordinator runs FIRST (fast,
+# deterministic, zero-cost). If it produces an actionable BUY/SELL signal
+# AND LLM is available AND cost budget remains, the LLM graph (agents/)
+# runs as a SECOND OPINION on that symbol only. LLM never runs on HOLDs.
+#
+# On ANY LLM failure (timeout, all-providers-down, cost cap exhausted),
+# the rule-based consensus is returned unchanged. The bot NEVER blocks
+# on LLM. LLM is advisory — disagreement does not override rule-based,
+# but downgrades strength so the risk pipeline can reject.
+#
+# To enable: set GROQ_API_KEY (or CEREBRAS/SAMBANOVA/OPENROUTER/GEMINI)
+# in .env, then set `enabled: true` here. Cost caps prevent runaway spend.
+llm:
+  enabled: false                       # opt-in — default off for safety
+  cost_budget_per_cycle_usd: 0.02      # ~4 LLM calls/cycle at $0.005 each
+  cost_budget_per_day_usd: 5.00        # hard daily cap
+  latency_budget_s: 8.0                # per-symbol LLM timeout
+  min_rule_strength: 0.15              # only run LLM if rule-based >= this
+  boost_multiplier: 1.3                # strength boost when LLM agrees (cap 1.5)
+  veto_multiplier: 0.5                 # strength reduction when LLM disagrees
+  estimated_cost_per_call_usd: 0.005   # rough estimate for budget tracking
+  require_llm_for_live: false          # if true, live mode refuses to trade without LLM
+
+# --- News + macro + economic calendar (feeds LLM NewsAnalyst) -----------
+# When LLM augmentation is enabled, these providers populate the
+# news_items / macro / upcoming_events context fields that NewsAnalyst
+# reads. All sources are optional — set the ones you have keys for.
+# Without any keys, the fields are empty and NewsAnalyst degrades to
+# "no recent news available" (still works, just less informed).
+#
+# Sources (all have free tiers):
+#   FRED_API_KEY       — Federal Reserve macro data (CPI, rates, GDP, VIX)
+#   NEWSAPI_KEY        — NewsAPI.org financial news (100 req/day free)
+#   TRADINGECONOMICS_KEY — Economic calendar (high-impact events)
+#   TRADERMADE_KEY     — Alternative economic calendar
+news:
+  enabled: true                # toggle the whole news subsystem
+  macro_enabled: true          # FRED macro indicators
+  events_enabled: true         # economic calendar
+  cache_ttl_s: 600             # news headlines cache (10 min)
+  macro_cache_ttl_s: 3600      # macro data cache (1 hour — updates daily)
+  events_cache_ttl_s: 1800     # events cache (30 min)
+  max_headlines: 10            # max articles per fetch
+  query: "crypto OR bitcoin OR forex"  # NewsAPI query
+
+# --- Retail sentiment (feeds LLM SentimentAnalyst) ----------------------
+# When LLM augmentation is enabled, this populates the retail_sentiment
+# context field (long/short positioning + contrarian signal).
+# Without any keys, falls back to synthetic neutral (50/50).
+#
+# Sources:
+#   MYFXBOOK_EMAIL + MYFXBOOK_PASSWORD — Myfxbook Community Outlook (free)
+#   OANDA_API_KEY + OANDA_ACCOUNT_ID   — OANDA v20 position book
+sentiment:
+  enabled: true                # toggle the sentiment subsystem
+  cache_ttl_s: 300             # per-symbol sentiment cache (5 min)
+
+# --- Risk management ----------------------------------------------------
+risk:
+  # ── FORENSIC AUDIT FIX: WisdomGate score scale alignment ──────────────
+  # The multi-agent coordinator produces strength on a 0.06–0.42 scale
+  # (sum of confidence × target_weight, where weights are 0.08–0.15).
+  # WisdomGate's Principle 6 checks confidence >= min_confidence.
+  # The old default of 0.60 was IMPOSSIBLE to reach → bot never traded.
+  # 0.12 is below the typical actionable range (0.15–0.30), so genuine
+  # signals pass while noise (strength < 0.12) is still filtered.
+  min_confidence: 0.12
+  # ATR-based SL/TP gives R:R of ~1.5–2.5 depending on volatility.
+  # The old default of 2.0 rejected many valid setups. 1.5 is more
+  # realistic for the ATR multiple defaults (SL=1.5×ATR, TP=2.5×ATR).
+  min_rr: 1.5
+  # Fraction of equity risked per trade (0.01 = 1%)
+  risk_per_trade: 0.01
+  # Hard stop for the day (0.05 = 5% equity drawdown -> halt)
+  max_daily_loss: 0.05
+  # Max concurrent open positions across all symbols
+  max_open_trades: 10
+  # Reject signals when current ATR-based volatility exceeds this multiple of baseline
+  volatility_filter_multiple: 2.5
+  # ATR lookback (in bars) used to measure volatility
+  atr_period: 14
+  # Mandatory stop-loss distance, expressed in ATR multiples
+  stop_atr_multiple: 1.5
+  take_atr_multiple: 2.5
+  # If true, refuse to open new trades on weekends for crypto symbols
+  block_weekends: false
+  # --- Risk Engine v2 (Day 14-16) ---
+  v2:
+    var_confidence: 0.95            # 95% 1-day VaR
+    var_lookback: 250               # bars used for vol estimation
+    max_var_pct: 0.04               # reject if portfolio VaR > 4%
+    max_drawdown_pct: 0.15          # halt if rolling DD > 15%
+    vol_scale_high: 1.5             # ATR > 1.5x baseline → scale down
+    vol_scale_zero: 3.0             # ATR > 3x baseline → reject
+    correlation_penalty_threshold: 0.7
+    max_lot_per_trade: 5.0
+
+# --- Execution -----------------------------------------------------------
+# P0-10 FIX (Phase 3): the `mode` field at the top level + CLI --mode flag
+# replaces the dead `execution.send_real_orders` key. Default is paper.
+# CLI: python main.py --mode=paper|demo|live
+# (live requires --i-understand-this-is-real-money)
+mode: demo                # demo (default) | live (requires --i-understand-this-is-real-money)
+execution:
+  # deviation_slippage: max slippage in points tolerated on market orders
+  deviation_slippage: 20
+  # order_timeout_s: hard timeout for a single order_send round-trip
+  order_timeout_s: 10
+  # cooldown_s: minimum seconds between consecutive orders on the same symbol
+  # (prevents rapid-fire duplicate signals; the risk pipeline also enforces this)
+  cooldown_s: 60
+
+# --- Backtest ------------------------------------------------------------
+backtest:
+  initial_capital: 10000.0
+  commission_per_trade: 0.0002     # 2 bps
+  slippage_points: 2
+  # Use bar close (realistic) or bar open (no lookahead) for fill price
+  fill_price: close
+
+# --- Logging -------------------------------------------------------------
+logging:
+  level: INFO              # DEBUG | INFO | WARNING | ERROR
+  system_log: logs/system.log
+  trade_log: logs/trades.log
+  json_logs: false          # set true for structured JSON lines
+  rotate_mb: 10
+  backup_count: 5
+
+# --- Main loop / scheduler ----------------------------------------------
+runtime:
+  poll_interval_s: 5        # how often the main loop wakes up
+  # Heartbeat — if no successful cycle for this many seconds, watchdog fires
+  heartbeat_timeout_s: 60
+  # Path of the kill-switch file. If this file exists, the bot halts.
+  kill_switch_file: data/KILL_SWITCH
+  # Crash recovery: persist state here so a restart can resume
+  state_file: data/state.json
+  # Maximum number of consecutive errors before the bot self-halts
+  max_consecutive_errors: 10
+  # PERF: caps how many auto-loaded symbols the bot tracks (was hardcoded
+  # to 100 in integration.py). Each symbol costs ~1 MT5 IPC round-trip
+  # per cycle in fetch_candles(), and the MetaTrader5 IPC channel is
+  # effectively serialized (see MT5Adapter._ipc_lock) — so cycle time
+  # scales roughly linearly with symbol count. 100 symbols is what
+  # produced ~35s cycles against a 30s alert threshold. Lower this
+  # (e.g. 30-40) if you want faster, more responsive cycles; raise the
+  # alert threshold below instead if you'd rather keep full coverage.
+  max_symbols: 100
+  # Cycle time above which a WARNING alert fires. With 100 symbols and
+  # serialized MT5 IPC, ~35s cycles are expected — raise this if you keep
+  # max_symbols at 100, or lower max_symbols instead and keep this at 30s.
+  cycle_time_alert_ms: 30000
+  # UI: idle/regime-blocked cycles (nothing scanned) are collapsed into a
+  # periodic heartbeat instead of one log line each — this many idle
+  # cycles between heartbeat lines. Active scan cycles always log
+  # immediately regardless of this setting.
+  idle_heartbeat_cycles: 12

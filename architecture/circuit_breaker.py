@@ -380,7 +380,7 @@ class CircuitBreakerCoordinator:
             return result
     """
 
-    def __init__(self, config: dict, bus: Optional[EventBus] = None):
+    def __init__(self, config: dict, bus: Optional[EventBus] = None, ignore_broker_disconnect: bool = False):
         self._bus = bus or get_bus()
         cfg = config or {}
         breaker_cfg = cfg.get("circuit_breakers", {})
@@ -405,13 +405,14 @@ class CircuitBreakerCoordinator:
             BrokerDisconnectBreaker(
                 cooldown_s=float(breaker_cfg.get("disconnect_cooldown_s", 30.0)),
                 bus=self._bus,
-            ),
+            ) if not ignore_broker_disconnect else None,
             SlippageBreaker(
                 max_slippage_bps=float(breaker_cfg.get("slippage_max_bps", 20.0)),
                 consecutive_threshold=int(breaker_cfg.get("slippage_consecutive", 3)),
                 cooldown_s=float(breaker_cfg.get("slippage_cooldown_s", 60.0)),
             ),
         ]
+        self.breakers = [b for b in self.breakers if b is not None]
         log.info("CircuitBreakerCoordinator: %d breakers registered",
                  len(self.breakers))
 

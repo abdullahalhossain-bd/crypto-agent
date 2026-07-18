@@ -72,6 +72,7 @@ LEGAL_TRANSITIONS: Dict[BotState, Set[BotState]] = {
     BotState.LIVE:        {BotState.DEGRADED, BotState.EMERGENCY,
                            BotState.SHUTDOWN},
     BotState.DEGRADED:    {BotState.LIVE, BotState.RECOVERY,
+                           BotState.SYNCING, BotState.WARMUP,
                            BotState.EMERGENCY, BotState.SHUTDOWN},
     BotState.RECOVERY:    {BotState.LIVE, BotState.DEGRADED,
                            BotState.EMERGENCY, BotState.SHUTDOWN},
