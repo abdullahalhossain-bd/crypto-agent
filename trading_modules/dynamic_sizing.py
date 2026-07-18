@@ -130,11 +130,11 @@ class DynamicPositionSizer:
             )
 
         # 2. Skip if drawdown too deep
-        if inp.current_drawdown_pct / 100.0 >= self.max_drawdown_pct:
+        if inp.current_drawdown_pct >= self.max_drawdown_pct:
             return SizingResult(
                 skip=True,
-                reason=(f"Drawdown {inp.current_drawdown_pct:.1f}% >= "
-                        f"max {self.max_drawdown_pct*100:.0f}%"),
+                reason=(f"Drawdown {inp.current_drawdown_pct:.1%} >= "
+                        f"max {self.max_drawdown_pct:.0%}"),
                 risk_usd=0, kelly_fraction=0, grade_multiplier=0,
                 position_usd=0, pct_of_equity=0,
             )

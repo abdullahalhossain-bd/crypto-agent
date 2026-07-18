@@ -87,6 +87,25 @@ class IdempotencyStore:
             self._seen[key] = time.time()
             self._save()
 
+    def unmark(self, key: str) -> None:
+        """Remove a key so a later cycle can retry it.
+
+        BUG FIX: check_and_mark() is called *before* the order is actually
+        sent to the broker (to stop concurrent duplicate sends), which
+        means a broker rejection (e.g. retcode=10030 "Unsupported filling
+        mode") or an exception during order placement left the key marked
+        "seen" forever — even though no trade was ever opened. Every
+        following cycle then hit the idempotency guard and skipped the
+        symbol permanently with "idempotency_duplicate_order", instead of
+        retrying (see Boom 99 Index / Crash 100 Index in system.log after
+        07:23:26). Callers must call this on any failed/aborted order so
+        the next cycle gets a fair shot at the same bar.
+        """
+        with self._lock:
+            if key in self._seen:
+                del self._seen[key]
+                self._save()
+
     def check_and_mark(self, key: str) -> bool:
         """Returns True if this is a NEW key (i.e. order should proceed).
         Returns False if we've already seen it (skip)."""

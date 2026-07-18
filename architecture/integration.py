@@ -57,7 +57,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -196,6 +196,16 @@ class TradingBot:
         # result.trades_rejected += 1 operations can lose updates or corrupt
         # the dict/list internals.
         self._result_lock = threading.Lock()
+
+        # BUG FIX: symbols whose symbol_info() call fails permanently
+        # (e.g. broker returns retcode -2 "Invalid arguments" — a
+        # delisted/unavailable meta-symbol like "Spot Up - Volatility Down
+        # Index") were being retried every single cycle forever, spamming
+        # system.log with the same ERROR line and burning an extra IPC
+        # round-trip per cycle (contributing to p95/p99 latency spikes).
+        # Once a symbol fails symbol_info(), remember it here and skip it
+        # in the universe filter on subsequent cycles instead of retrying.
+        self._invalid_symbols: set = set()
 
         # === Layer 1: Foundation ===
         self.state_machine: StateMachine = get_state_machine()
@@ -580,6 +590,67 @@ class TradingBot:
     # ------------------------------------------------------------------
     # Symbol loading
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Asset-class classification — crypto & futures/synthetics only
+    # ------------------------------------------------------------------
+    # Bot is now scoped to crypto + futures/synthetic-index instruments;
+    # plain FX currency pairs (majors/minors/crosses) are excluded even if
+    # they're still listed in config.yaml `symbols:`, so a stale config
+    # doesn't silently pull the bot back into forex.
+    _CRYPTO_TICKERS = (
+        "BTC", "ETH", "XRP", "LTC", "SOL", "BNB", "DOGE", "ADA", "DOT",
+        "MATIC", "AVAX", "LINK", "SHIB", "TRX", "ATOM", "UNI", "BCH",
+        "DASH", "DSH", "XLM", "EOS", "XMR", "USDT", "USDC",
+    )
+    # Futures / continuous-synthetic instruments (Deriv-style synthetic
+    # indices behave like cash-settled continuous futures — 24/7, no
+    # underlying spot FX pair — plus real index/commodity futures.
+    _FUTURES_KEYWORDS = (
+        "us30", "us500", "nas100", "uk100", "ger40", "dax", "spx", "ndx",
+        "wall street", "europe 50", "usoil", "ukoil", "ngas", "xauusd",
+        "xagusd",
+    )
+    # Deriv synthetic indices — engineered price processes (fixed spike
+    # frequency, fixed volatility), NOT futures on a real underlying.
+    # Previously lumped into _FUTURES_KEYWORDS, which meant the default
+    # asset_class_focus=["crypto","futures"] silently let this "crypto"
+    # bot keep trading Boom/Crash/Step Index instead of only BTC/ETH/etc.
+    _SYNTHETIC_KEYWORDS = (
+        "boom", "crash", "volatility", "jump", "step index", "range break",
+    )
+    # Plain FX currency codes — used to detect currency pairs like
+    # EURUSD, CADJPY, AUDNZD (two 3-letter codes back to back) so they're
+    # excluded even when disguised behind a custom strategy label like
+    # "EURUSD RSI Pullback Index".
+    _FX_CODES = (
+        "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "SGD",
+        "HKD", "MXN", "NOK", "SEK", "ZAR", "TRY", "CNH", "PLN", "HUF",
+        "DKK", "CZK",
+    )
+
+    def _asset_class(self, name: str) -> str:
+        """Classify a symbol name as 'crypto', 'futures', 'forex', or 'other'.
+
+        Uses the leading token/prefix of the name (before any strategy-label
+        suffix like " RSI Pullback Index") since that prefix is the actual
+        underlying instrument passed straight through to MT5.
+        """
+        base = name.strip().split(" ")[0].upper()
+        low = name.lower()
+        if any(low.startswith(kw) or kw in low for kw in self._SYNTHETIC_KEYWORDS):
+            return "synthetic"
+        if any(low.startswith(kw) or kw in low for kw in self._FUTURES_KEYWORDS):
+            return "futures"
+        if any(base.startswith(t) or t in base for t in self._CRYPTO_TICKERS):
+            return "crypto"
+        # Pure FX pair: exactly two known 3-letter currency codes back to
+        # back (e.g. EURUSD, CADJPY, AUDNZD) with nothing else in the base.
+        if len(base) == 6:
+            left, right = base[:3], base[3:]
+            if left in self._FX_CODES and right in self._FX_CODES:
+                return "forex"
+        return "other"
+
     def _load_symbols(self) -> List[str]:
         cfg_syms = self._cfg.get("symbols", [])
         names = [s["name"] for s in cfg_syms if isinstance(s, dict) and "name" in s]
@@ -614,6 +685,28 @@ class TradingBot:
                          len(filtered), len(extra) - len(filtered))
             except Exception as e:
                 log.warning("TradingBot: auto-load symbols failed: %r", e)
+
+        # Asset-class focus filter: crypto + real futures/commodities/
+        # indices (US30, XAUUSD, etc). Deriv synthetic indices (Boom/Crash/
+        # Step/Volatility/Jump) are deliberately excluded by default — set
+        # via config.yaml `asset_class_focus`, e.g. add "synthetic" to
+        # re-enable them, or "forex"/"other" for everything else.
+        focus = set(self._cfg.get("asset_class_focus", ["crypto", "futures"]))
+        pre_count = len(names)
+        kept, dropped = [], []
+        for s in names:
+            cls = self._asset_class(s)
+            if cls in focus:
+                kept.append(s)
+            else:
+                dropped.append((s, cls))
+        if dropped:
+            log.info("TradingBot: asset_class_focus=%s — dropped %d/%d symbols "
+                      "(%s)", sorted(focus), len(dropped), pre_count,
+                      ", ".join(f"{s}[{c}]" for s, c in dropped[:10]) +
+                      (" ..." if len(dropped) > 10 else ""))
+        names = kept
+
         # PERF NOTE: each symbol costs ~1 MT5 IPC round-trip per cycle in
         # _process_symbol (fetch_candles), and MT5's IPC channel is
         # effectively serialized regardless of thread count (see the lock
@@ -623,6 +716,7 @@ class TradingBot:
         # a deliberate choice, not a hardcoded surprise.
         max_symbols = int(self._cfg.get("runtime", {}).get("max_symbols", 100))
         return names[:max_symbols]
+
 
     # ------------------------------------------------------------------
     # Universe pre-filter — production optimization
@@ -715,9 +809,23 @@ class TradingBot:
             n_volatility_fail = 0
             n_data_fail = 0
             for s in not_open:
+                if s in self._invalid_symbols:
+                    n_data_fail += 1
+                    continue
                 try:
                     # Spread check (cheap — no OHLCV fetch)
-                    sym_info = self.exchange.symbol_info(s)
+                    try:
+                        sym_info = self.exchange.symbol_info(s)
+                    except Exception as e:
+                        # Permanent broker-side rejection (e.g. -2 "Invalid
+                        # arguments" for a delisted/unavailable symbol) —
+                        # remember it so we stop retrying every cycle.
+                        self._invalid_symbols.add(s)
+                        log.warning("UNIVERSE FILTER: %s failed symbol_info() "
+                                    "— marking permanently invalid, will not "
+                                    "retry: %r", s, e)
+                        n_data_fail += 1
+                        continue
                     if sym_info is not None:
                         spread = getattr(sym_info, "spread", 0)
                         point = getattr(sym_info, "point", 0.0001)
@@ -920,7 +1028,7 @@ class TradingBot:
             if self.exchange is not None and self._symbols:
                 try:
                     df_proxy = self.exchange.fetch_candles(
-                        self._symbols[0], "M15", 200
+                        self._symbols[0], "M15", 1000
                     )
                     if df_proxy is None or df_proxy.empty:
                         log.warning("TradingBot: regime detect — fetch_candles "
@@ -1095,15 +1203,39 @@ class TradingBot:
                             self._trigger_trade_reflection(pos, pnl, "broker_sl_tp")
 
                     # Reconcile
+                    #
+                    # ROOT-CAUSE FIX (screenshot 2026-07-18): this ran every
+                    # cycle with auto_resolve defaulting to False, so a
+                    # phantom broker position (open at the broker but not in
+                    # local state — e.g. after a restart, or a crash between
+                    # order fill and on_position_opened()) was only ever
+                    # logged, never registered. has_open_position(symbol)
+                    # then kept returning False for a symbol that already
+                    # had an open trade, which is what let the bot open a
+                    # second, uncoordinated position on the same symbol
+                    # (Boom 99 Index opposite-direction, Skew Step Index 5 Up
+                    # same-direction) instead of being blocked by the
+                    # one-trade-per-symbol gate. auto_resolve=True makes this
+                    # cycle (every ~5-9s) self-healing instead of relying
+                    # solely on the slower reconcile_with_broker() path
+                    # (every N cycles). sl/tp/magic are now passed through so
+                    # a registered phantom position still gets correct
+                    # trailing-stop/breakeven handling instead of defaulting
+                    # to sl=0/tp=0.
                     discrepancies = self.portfolio.reconcile(
                         [{"ticket": p.ticket, "symbol": p.symbol,
                           "side": p.type.value, "volume": p.volume,
                           "open_price": p.open_price,
-                          "current_price": p.current_price}
-                         for p in broker_positions]
+                          "current_price": p.current_price,
+                          "sl": getattr(p, "sl", 0.0),
+                          "tp": getattr(p, "tp", 0.0),
+                          "magic": getattr(p, "magic", 0)}
+                         for p in broker_positions],
+                        auto_resolve=True,
                     )
                     for d in discrepancies:
                         log.warning("TradingBot: reconciliation: %s", d)
+                        self._notify("Reconciliation Discrepancy (auto-resolved)", d)
                 except Exception as e:
                     result.errors.append(f"position update failed: {e}")
 
@@ -1226,7 +1358,7 @@ class TradingBot:
 
         # Fetch OHLCV
         try:
-            df = self.exchange.fetch_candles(symbol, "M15", 500)
+            df = self.exchange.fetch_candles(symbol, "M15", 2000)
         except Exception as e:
             self._result_add_error(result, f"{symbol}: fetch failed: {e}")
             self._record_skip(symbol, equity, None, None, result,
@@ -1667,6 +1799,25 @@ class TradingBot:
                 # Apply position multiplier from wisdom gate
                 if final_verdict.modified_lots:
                     final_verdict.modified_lots *= wisdom_verdict.position_multiplier
+                    # BUG FIX: SizingGate already rounds lots to the broker's
+                    # volume_step and clamps to [volume_min, volume_max]. But
+                    # the WisdomGate position_multiplier (an arbitrary 0..1.5
+                    # float) was applied AFTER that normalization, so the
+                    # final volume sent to the broker was almost never a
+                    # clean multiple of volume_step (and could even fall
+                    # below volume_min). MT5 then rejected literally every
+                    # order with retcode=10014 "Invalid volume" (see
+                    # trades.log / system.log — 100% order rejection rate).
+                    # Re-normalize here using the same step/min/max logic
+                    # as SizingGate.
+                    if sym_info is not None:
+                        step = float(getattr(sym_info, "volume_step", 0.01)) or 0.01
+                        vmin = float(getattr(sym_info, "volume_min", 0.01))
+                        vmax = float(getattr(sym_info, "volume_max", 100.0))
+                        final_verdict.modified_lots = round(
+                            round(final_verdict.modified_lots / step) * step, 8)
+                        final_verdict.modified_lots = max(
+                            vmin, min(vmax, final_verdict.modified_lots))
             except Exception as e:
                 # WisdomGate failure is a hard reject — we don't trade without it.
                 # Review Point 6: distinguish "code bug in _build_trade_context"
@@ -1899,6 +2050,10 @@ class TradingBot:
                 self._finalize_rejection(audit_id, symbol, reject_reason, result)
                 log.warning("TradingBot: ORDER REJECTED %s: %s (retcode=%d)",
                             symbol, order_result.comment, order_result.error_code)
+                # BUG FIX: no trade was actually opened, so don't let the
+                # idempotency guard permanently blackhole this symbol/bar —
+                # release the key so the next cycle can retry it.
+                self.idempotency.unmark(idem_key)
         except Exception as e:
             # ── REJECT PATH 4: order placement raised an exception ─────────
             self._result_add_error(result, f"{symbol}: order failed: {e}")
@@ -1909,6 +2064,13 @@ class TradingBot:
                 self.portfolio.release_reservation(reservation_id)
             self._finalize_rejection(audit_id, symbol, f"order_exception: {e}", result)
             log.exception("TradingBot: order placement crashed for %s: %r", symbol, e)
+            # BUG FIX: same as REJECT PATH 3 — an exception during order
+            # placement means we don't know a trade went through, so don't
+            # leave the idempotency key permanently marking it as "sent".
+            try:
+                self.idempotency.unmark(idem_key)
+            except NameError:
+                pass  # crashed before idem_key was computed — nothing to unmark
 
     # ------------------------------------------------------------------
     # P0-1/P0-8 FIX helpers: every exit path writes a decision record
@@ -2703,6 +2865,27 @@ class TradingBot:
                         except Exception:
                             pass
                         if pos_df is not None and len(pos_df) >= 20:
+                            # BUG FIX: this previously compared exit_rec.action
+                            # against ExitAction.CLOSE / .CLOSE_PARTIAL / .MODIFY
+                            # — none of which exist on the real enum (see
+                            # trading_modules/dynamic_exit_intelligence.py,
+                            # which only ever sets HOLD, TIGHTEN_STOP,
+                            # MOVE_TO_BREAKEVEN, TRAIL_STOP, PARTIAL_CLOSE, or
+                            # CLOSE_ALL). Every position that reached this
+                            # branch raised AttributeError (see system.log —
+                            # "exit intelligence error ... has no attribute
+                            # 'CLOSE'" on every cycle for every open trade),
+                            # so dynamic exits never fired; positions relied
+                            # solely on their static broker-side SL/TP.
+                            #
+                            # This also previously only *logged* CLOSE/PARTIAL
+                            # recommendations instead of acting on them — the
+                            # position management loop looked like it was
+                            # managing exits but never actually closed or
+                            # trimmed anything. Now it executes them via the
+                            # same close_order() path used by the time-exit
+                            # branch above.
+                            from trading_modules.dynamic_exit_intelligence import ExitAction
                             exit_rec = self._exit_intel.evaluate(
                                 position_side=pos["side"],
                                 entry_price=pos["entry_price"],
@@ -2713,29 +2896,88 @@ class TradingBot:
                                 r_multiple=r_mult,
                                 spread_bps=pos.get("spread_bps", 5.0),
                             )
-                            if exit_rec.action in (ExitAction.CLOSE, ExitAction.CLOSE_PARTIAL):
+                            if exit_rec.action == ExitAction.CLOSE_ALL:
+                                exit_price = tick.bid if pos["side"] == "BUY" else tick.ask
+                                close_result = self.exchange.close_order(
+                                    ticket, pos["symbol"], pos["volume"], pos["side"])
+                                if close_result.ok:
+                                    pnl = self.portfolio.on_position_closed(
+                                        ticket, exit_price, reason="exit_intel")
+                                    self.breakers.record_trade_outcome(pnl)
+                                    self._record_closed_trade_to_journal(
+                                        ticket, pos["symbol"], pos["side"],
+                                        pos["volume"], pos["entry_price"],
+                                        exit_price, pnl, pos.get("sl", 0.0),
+                                        pos.get("tp", 0.0), 0.0, "exit_intel")
+                                    self._trigger_trade_reflection(pos, pnl, "exit_intel")
                                 log.info("TradingBot: EXIT_INTEL %s action=%s reason=%s "
-                                         "urgency=%s ticket=%d",
+                                         "urgency=%s ticket=%d ok=%s",
                                          pos["symbol"], exit_rec.action.value,
                                          exit_rec.reason, exit_rec.urgency.value,
-                                         ticket)
-                            elif exit_rec.action == ExitAction.MODIFY:
+                                         ticket, close_result.ok)
+                            elif exit_rec.action == ExitAction.PARTIAL_CLOSE:
+                                exit_price = tick.bid if pos["side"] == "BUY" else tick.ask
+                                close_pct = min(max(exit_rec.close_pct, 0.0), 1.0) or 0.5
+                                close_vol = self._normalize_volume_for_symbol(
+                                    pos["symbol"], pos["volume"] * close_pct)
+                                if 0 < close_vol < pos["volume"]:
+                                    close_result = self.exchange.close_order(
+                                        ticket, pos["symbol"], close_vol, pos["side"])
+                                    if close_result.ok:
+                                        pnl = self.portfolio.partial_close_position(
+                                            ticket, exit_price, close_vol, reason="exit_intel")
+                                        self.breakers.record_trade_outcome(pnl)
+                                        if exit_rec.new_stop:
+                                            self.exchange.modify_order(
+                                                ticket, exit_rec.new_stop, pos.get("tp"))
+                                            self.portfolio.update_position_sl_tp(
+                                                ticket, sl=exit_rec.new_stop, tp=pos.get("tp"))
+                                    log.info("TradingBot: EXIT_INTEL %s action=%s reason=%s "
+                                             "urgency=%s ticket=%d closed_vol=%.4f ok=%s",
+                                             pos["symbol"], exit_rec.action.value,
+                                             exit_rec.reason, exit_rec.urgency.value,
+                                             ticket, close_vol, close_result.ok)
+                            elif exit_rec.action in (
+                                ExitAction.TIGHTEN_STOP, ExitAction.MOVE_TO_BREAKEVEN,
+                                ExitAction.TRAIL_STOP,
+                            ):
                                 # Update SL/TP if recommended
-                                if exit_rec.new_sl and exit_rec.new_sl != pos.get("sl"):
+                                if exit_rec.new_stop and exit_rec.new_stop != pos.get("sl"):
                                     if self._mode != "paper":
                                         self.exchange.modify_order(
-                                            ticket, exit_rec.new_sl, pos.get("tp"))
+                                            ticket, exit_rec.new_stop, pos.get("tp"))
                                     self.portfolio.update_position_sl_tp(
-                                        ticket, sl=exit_rec.new_sl, tp=pos.get("tp"))
+                                        ticket, sl=exit_rec.new_stop, tp=pos.get("tp"))
                                     log.info("TradingBot: EXIT_INTEL modify SL %s → %.5f "
                                              "(reason: %s)", pos["symbol"],
-                                             exit_rec.new_sl, exit_rec.reason)
+                                             exit_rec.new_stop, exit_rec.reason)
                 except Exception as exit_exc:
                     log.debug("TradingBot: exit intelligence error for %s: %r",
                              pos.get("symbol", "?"), exit_exc)
             except Exception as e:
                 log.debug("TradingBot: position management failed for %s: %r",
                          pos.get("symbol", "?"), e)
+
+    def _normalize_volume_for_symbol(self, symbol: str, volume: float) -> float:
+        """Round `volume` down to the symbol's broker volume_step and clamp
+        to [volume_min, volume_max]. Used anywhere a volume is derived
+        from arithmetic (e.g. position_size * close_pct) rather than
+        coming straight out of SizingGate, so it can't end up as a
+        non-step-aligned value the broker rejects with retcode=10014
+        "Invalid volume" — the same failure mode fixed for order entries.
+        """
+        try:
+            info = self.exchange.symbol_info(symbol) if self.exchange else None
+        except Exception:
+            info = None
+        step = float(getattr(info, "volume_step", 0.01)) if info else 0.01
+        vmin = float(getattr(info, "volume_min", 0.01)) if info else 0.01
+        vmax = float(getattr(info, "volume_max", 100.0)) if info else 100.0
+        step = step or 0.01
+        normalized = round(round(volume / step) * step, 8)
+        if normalized < vmin:
+            return 0.0  # too small to close as its own order — caller skips
+        return max(0.0, min(vmax, normalized))
 
     def _symbol_magic(self, symbol: str, default: int = 100000) -> int:
         """Look up the per-symbol magic number from config (for MT5 trade tagging)."""
@@ -2896,17 +3138,53 @@ class TradingBot:
                 discrepancies.append(d)
 
             # Broker has position we don't track (phantom — could be a
-            # manual trade, or a fill we missed). We deliberately do NOT
-            # auto-create a local entry for this: we don't know the SL/TP,
-            # magic number, or strategy provenance, and fabricating that
-            # data risks masking a real bug. Surfaced for manual review.
+            # manual trade, a fill we missed, or a crash/restart that lost
+            # the in-memory reservation before on_position_opened() ran).
+            #
+            # ROOT-CAUSE FIX (screenshot 2026-07-18): this branch used to
+            # ONLY log the discrepancy and never registered the position
+            # locally. That left has_open_position(symbol) == False for a
+            # symbol the broker already had an open trade on, which
+            # silently defeated the "one trade per symbol" gate in
+            # PortfolioManager.can_open_new() (rule #4). That is exactly
+            # how Boom 99 Index and Skew Step Index 5 Up each ended up with
+            # two simultaneous, uncoordinated positions (one pair opposite-
+            # direction, one pair same-direction) in the MT5 screenshot —
+            # the bot's own state said the symbol was flat when it wasn't,
+            # so every downstream gate that reads has_open_position passed
+            # a trade it should have blocked.
+            #
+            # Fix: register the broker's position into local state (with
+            # its real SL/TP/side/volume) as soon as it's discovered, so
+            # the very next cycle's has_open_position() check reflects
+            # reality. We still emit the discrepancy for visibility/alerting
+            # — silently absorbing it would hide the underlying miss (a
+            # crash, a slow fill, a manual trade) that caused it.
             phantom = broker_tickets - local_tickets
             for t in phantom:
                 p = next((bp for bp in broker_positions if int(bp.ticket) == t), None)
                 if p:
-                    d = (f"Broker ticket {t} ({p.symbol} {p.volume}) not in "
+                    # BUG FIX: Position.type is an OrderSide (str enum:
+                    # "BUY"/"SELL"), not an int 0/1, and the price field is
+                    # named open_price (see Position dataclass in
+                    # exchange_abstraction.py), not price_open. The previous
+                    # version of this fix used p.price_open, which doesn't
+                    # exist on Position and raised AttributeError every time
+                    # a phantom was found — silently aborting reconciliation
+                    # for that cycle instead of registering the position.
+                    side = str(getattr(p, "type", "BUY"))
+                    self.portfolio.on_position_opened(
+                        ticket=t, symbol=p.symbol, side=side,
+                        volume=float(p.volume), entry_price=float(p.open_price),
+                        sl=float(getattr(p, "sl", 0.0) or 0.0),
+                        tp=float(getattr(p, "tp", 0.0) or 0.0),
+                        magic=int(getattr(p, "magic", 0) or 0),
+                        contract_size=float(getattr(p, "contract_size", 1.0) or 1.0),
+                    )
+                    d = (f"Broker ticket {t} ({p.symbol} {p.volume} {side}) not in "
                          f"local state — external trade or missed fill. "
-                         f"Manual review required.")
+                         f"Registered locally so duplicate-symbol gate now sees it; "
+                         f"still flagged for manual review of why it was missed.")
                     discrepancies.append(d)
 
             # Volume mismatch on shared tickets — C10 fix: sync local

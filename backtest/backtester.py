@@ -37,6 +37,7 @@ import pandas as pd
 
 from architecture.risk_pipeline import RiskPipeline, RiskContext, RiskVerdict
 from architecture.portfolio_manager_v2 import PortfolioManager
+from architecture.exchange_abstraction import SymbolInfo
 from engine.signals import Signal, Action
 from engine.strategy import Strategy
 from utils.indicators import atr
@@ -272,12 +273,23 @@ class Backtester:
         gate verdicts in backtest and live.
         """
         pm_metrics = self.portfolio.metrics()
+        # FIX: symbol_info=None used to silently DISABLE the spread gate,
+        # volume step/min/max clamping, and minimum-stop-distance check in
+        # RiskPipeline (they're all guarded by `if ctx.symbol_info is not
+        # None`) — despite the comment above claiming backtest and live
+        # "produce the same gate verdicts". A conservative synthetic
+        # default (0 spread, 0.01 lot step, no min-stop-distance) is not
+        # broker-exact, but it exercises the same code paths live does
+        # instead of skipping them outright, so a strategy that only looks
+        # profitable because backtest waived these constraints will now
+        # show that in the backtest results too.
+        default_symbol_info = SymbolInfo(name=str(getattr(signal, "symbol", "")))
         return RiskContext(
             signal=signal,
             df=df,
             account_equity=equity,
             portfolio=pm_metrics,
-            symbol_info=None,  # backtest has no live symbol_info; gates handle None
+            symbol_info=default_symbol_info,
             current_prices={},
             open_positions=[p for p in self.portfolio.all_positions()],
             consecutive_losses=self.portfolio.consecutive_losses(),

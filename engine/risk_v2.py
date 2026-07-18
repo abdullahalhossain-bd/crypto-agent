@@ -189,6 +189,14 @@ class RiskEngineV2:
                 # Scale size down by (vol_scale_zero - ratio) / (vol_scale_zero - vol_scale_high)
                 scale = (self.vol_scale_zero - ratio) / (self.vol_scale_zero - self.vol_scale_high)
                 scale = max(0.1, min(1.0, scale))
+                # NOTE: this module is not currently wired into the live
+                # pipeline (architecture/integration.py uses risk_pipeline.py
+                # instead). If it's ever reconnected, re-normalize
+                # adjusted_lots to the broker's volume_step/min/max AFTER
+                # this multiplication — see the fix in integration.py's
+                # WisdomGate position_multiplier application for why an
+                # un-normalized multiply here would cause broker
+                # retcode=10014 "Invalid volume" rejections.
                 adjusted_lots *= scale
                 trace["checks"]["volatility"]["scale"] = scale
 

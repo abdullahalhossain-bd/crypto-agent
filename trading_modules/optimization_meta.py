@@ -296,7 +296,7 @@ def bayesian_optimize(
     try:
         from .statistics_advanced import gaussian_process_fit
     except (ImportError, Exception) as e:
-        log.warning("optimization_meta: statistics_advanced unavailable (%r) — using simple fallback", e)
+        logger.warning("optimization_meta: statistics_advanced unavailable (%r) — using simple fallback", e)
         gaussian_process_fit = None
 
     rng = np.random.default_rng(seed)

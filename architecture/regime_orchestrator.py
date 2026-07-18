@@ -153,8 +153,8 @@ class RegimeOrchestrator:
                  regime_history_size: int = 100,
                  crisis_correlation_threshold: float = 0.85,
                  crisis_atr_pct_threshold: float = 0.04,
-                 min_regime_duration_s: float = 120.0,
-                 regime_confirmation_cycles: int = 3):
+                 min_regime_duration_s: float = 30.0,
+                 regime_confirmation_cycles: int = 1):
         self._lock = threading.RLock()
         self._bus = bus or get_bus()
         self._atr_window: List[float] = []

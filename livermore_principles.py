@@ -451,7 +451,7 @@ class WisdomGate:
         # from regime_orchestrator.py. Previously had "low_vol_dead",
         # "choppy", "extreme_vol" which are NEVER returned. Now includes
         # "crisis" and "transition" which WERE missing.
-        bad_regimes = {"unknown", "chop", "high_vol", "crisis", "transition", "extreme_vol"}
+        bad_regimes = {"chop", "high_vol", "crisis", "transition", "extreme_vol"}
         if ctx.regime in bad_regimes:
             failed += 1
             failed_list.append("15.market_type_detection")

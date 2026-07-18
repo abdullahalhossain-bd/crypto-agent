@@ -49,7 +49,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from architecture.event_bus import EventBus, EventType, get_bus
-from utils.logger import get_logger
+from utils.logger import get_logger, log_trade
 
 log = get_logger("trading_bot.architecture.exchange_abstraction")
 
@@ -129,6 +129,18 @@ class SymbolInfo:
     tick_size: float = 0.00001
     visible: bool = True
     trade_mode: str = "FULL"  # FULL, LONGONLY, SHORTONLY, DISABLED
+    # BUG FIX: this field was missing entirely, so every caller doing
+    # getattr(symbol_info(...), "filling_mode", 0) silently got 0 back —
+    # NOT the broker's real bitmask. That made the "auto-detect filling
+    # mode" logic in _build_request() always think modes==0 (i.e. "no
+    # FOK/IOC advertised") and always fall back to ORDER_FILLING_RETURN,
+    # even for symbols (e.g. Deriv synthetic indices like "Boom 99 Index",
+    # "Crash 100 Index") that actually require IOC. Result: retcode=10030
+    # "Unsupported filling mode" on every order for those symbols (see
+    # system.log / trades.log 07:23:26). Now the raw MT5 filling_mode
+    # bitmask is threaded through so the auto-detect logic actually sees
+    # real data instead of always the default.
+    filling_mode: int = 0
 
 
 @dataclass
@@ -416,6 +428,10 @@ class MT5Adapter(ExchangeInterface):
             stops_level=int(getattr(info, "trade_stops_level", 0)),
             tick_value=float(getattr(info, "trade_tick_value", 1.0)),
             tick_size=float(getattr(info, "trade_tick_size", 0.00001)),
+            # BUG FIX: was not being copied from the raw MT5 struct, so
+            # SymbolInfo.filling_mode always fell back to the dataclass
+            # default (0). See the field-level comment on SymbolInfo.
+            filling_mode=int(getattr(info, "filling_mode", 0)),
         )
 
     def get_symbols_by_pattern(self, patterns: List[str]) -> List[str]:
@@ -495,6 +511,28 @@ class MT5Adapter(ExchangeInterface):
         except Exception as e:  # noqa: BLE001
             log.debug("MT5Adapter: stops_level validation skipped: %r", e)
 
+        # BUG FIX: this was previously hardcoded to mt5.ORDER_FILLING_IOC
+        # for every symbol, regardless of what the broker actually
+        # advertises via symbol_info.filling_mode. Symbols that only
+        # support market execution (filling_mode == 0, no FOK/IOC bit set —
+        # e.g. CADJPY) reject IOC/FOK orders with retcode=10030
+        # "Unsupported filling mode" (see system.log). Auto-detect instead,
+        # mirroring the bitmask semantics: bit0=FOK, bit1=IOC, and fall
+        # back to RETURN when neither is advertised.
+        filling_mode = mt5.ORDER_FILLING_IOC
+        try:
+            fill_info = self.symbol_info(req.symbol)
+            modes = int(getattr(fill_info, "filling_mode", 0))
+            if modes & 2:  # IOC
+                filling_mode = mt5.ORDER_FILLING_IOC
+            elif modes & 1:  # FOK
+                filling_mode = mt5.ORDER_FILLING_FOK
+            else:
+                filling_mode = getattr(mt5, "ORDER_FILLING_RETURN", 2)
+        except Exception as e:  # noqa: BLE001
+            log.debug("MT5Adapter: filling_mode auto-detect skipped, "
+                      "defaulting to IOC: %r", e)
+
         return {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": req.symbol,
@@ -508,7 +546,7 @@ class MT5Adapter(ExchangeInterface):
             "magic": int(req.magic),
             "comment": req.comment or "ai_bot",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
     def place_order(self, req: OrderRequest) -> OrderResult:
@@ -560,6 +598,16 @@ class MT5Adapter(ExchangeInterface):
                 },
                 source="mt5_adapter",
             )
+            # BUG FIX: trades.log was always empty because nothing in the
+            # live order path ever called log_trade()/get_trade_logger() —
+            # setup_logger() wires up a dedicated trade file handler but it
+            # was never fed any records. Emit a structured trade event here
+            # for both fills and rejections.
+            log_trade("open" if ok else "reject",
+                      symbol=req.symbol, side=req.side.value,
+                      volume=order_result.volume, ticket=order_result.ticket,
+                      price=order_result.price, retcode=retcode,
+                      comment=order_result.comment, latency_ms=round(latency, 1))
             return order_result
         except Exception as e:  # noqa: BLE001
             latency = (time.time() - t0) * 1000
@@ -571,6 +619,9 @@ class MT5Adapter(ExchangeInterface):
                          "error": str(e), "latency_ms": latency},
                 source="mt5_adapter",
             )
+            log_trade("error", symbol=req.symbol, side=req.side.value,
+                      volume=req.volume, error=str(e),
+                      latency_ms=round(latency, 1))
             return OrderResult(ok=False, comment=str(e), latency_ms=latency)
 
     def modify_order(self, ticket: int, sl: float, tp: float) -> OrderResult:

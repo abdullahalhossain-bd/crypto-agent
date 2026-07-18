@@ -21,6 +21,13 @@ from typing import Any, Optional  # FIX (SR-1): Optional was used below but neve
 import numpy as np
 import pandas as pd
 
+from utils.logger import get_logger
+
+# BUG FIX: `log` was used at the ATR-fallback debug line below but never
+# defined anywhere in this module, so hitting that edge case (zero/NaN ATR)
+# raised NameError instead of just logging the fallback.
+log = get_logger("engine.candlestick.sr_confidence")
+
 
 @dataclass
 class SRLevel:

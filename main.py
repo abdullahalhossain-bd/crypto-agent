@@ -35,13 +35,14 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import math
 import os
 import signal
 import sys
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -385,7 +386,20 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
     from observability.dashboard import DashboardRenderer
 
     _mon_cfg = cfg.get("monitoring", {})
-    _sys_mon = SystemMonitor()
+    # BUG FIX: SystemMonitor was the only monitor in this block not wired
+    # to config.yaml `monitoring.*` — it always used the hardcoded
+    # p95=2000ms/p99=5000ms defaults below, while this bot's own code
+    # documents ~7-9s steady-state cycles (up to ~35s for 100 symbols,
+    # see _load_symbols' PERF NOTE) as normal MT5 IPC-bound behavior.
+    # That mismatch guaranteed a false "CRITICAL" health alert every
+    # single monitoring interval regardless of whether anything was
+    # actually wrong — alert fatigue, not a real signal. Defaults below
+    # are raised to match the documented realistic baseline, and both
+    # are now overridable via config.yaml.
+    _sys_mon = SystemMonitor(
+        p95_threshold_ms=float(_mon_cfg.get("cycle_p95_threshold_ms", 15000.0)),
+        p99_threshold_ms=float(_mon_cfg.get("cycle_p99_threshold_ms", 30000.0)),
+    )
     _trade_mon = TradingMonitor()
     _alpha_mon = AlphaMonitor()
     _risk_mon = RiskMonitor(
@@ -410,6 +424,31 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
     # ------------------------------------------------------------------
     # TIER 1 wiring: portfolio-level safety gates (run BEFORE bot.cycle)
     # ------------------------------------------------------------------
+
+    def _compute_rolling_sharpe(closed_trades: list, days: int = 14) -> tuple:
+        """Compute 14d rolling Sharpe ratio and trade count from closed trades.
+
+        Uses only trades whose close_time_iso falls within the last *days* days.
+        Returns (sharpe_ratio, trade_count_14d).  If fewer than 2 trades,
+        returns (0.0, count).
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        recent = [t for t in closed_trades
+                  if t.get("close_time_iso") and
+                  datetime.fromisoformat(t["close_time_iso"].replace("Z", "+00:00")) >= cutoff]
+        count = len(recent)
+        if count < 2:
+            return 0.0, count
+        pnls = [t["pnl"] for t in recent if "pnl" in t]
+        if len(pnls) < 2:
+            return 0.0, count
+        mean_pnl = sum(pnls) / len(pnls)
+        std_pnl = math.sqrt(sum((p - mean_pnl) ** 2 for p in pnls) / (len(pnls) - 1))
+        if std_pnl == 0:
+            return 0.0, count
+        # Annualized Sharpe (assuming ~252 trading periods in 14 calendar days ≈ 10 trading days)
+        sharpe = (mean_pnl / std_pnl) * math.sqrt(10)
+        return sharpe, count
     from trading_modules.kill_conditions import KillConditions, PortfolioState
     from engine.guardrails import GuardrailEngine
 
@@ -418,10 +457,12 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
         max_cumulative_loss=float(_kill_cfg.get("max_cumulative_loss", 500.0)),
         max_loss_cooldown_days=int(_kill_cfg.get("max_loss_cooldown_days", 7)),
         min_sharpe=float(_kill_cfg.get("min_sharpe", 0.0)),
-        max_drawdown_pct=float(_kill_cfg.get("max_drawdown_pct", 15.0)),
+        max_drawdown_pct=float(_kill_cfg.get("max_drawdown_pct", 0.15)),
+        enforce_brier_gate=(mode == "live"),
     )
     _guardrails = GuardrailEngine()
     _start_of_day_equity = 0.0
+    _cycle_count = 0  # Track cycle number for first-cycle checks
 
     try:
         while not _SHUTDOWN:
@@ -439,9 +480,30 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
             # --- TIER 1: portfolio-level safety (before cycle) ---
             try:
                 _metrics = bot.portfolio.metrics()
+
+                # Initialise start-of-day equity on first cycle
+                if _start_of_day_equity <= 0:
+                    _start_of_day_equity = _metrics.equity
+
+                # On the very first cycle with zero open positions, always
+                # reset peak_equity.  A stored peak from a prior session is
+                # meaningless — drawdown should be measured from THIS run.
+                _safe_dd_pct = _metrics.current_drawdown_pct
+                if _cycle_count == 0 and _metrics.open_positions == 0:
+                    log.info("Guardrails: fresh session, 0 positions — "
+                             "resetting peak_equity to current equity %.2f "
+                             "(was reporting %.2f%% drawdown from stale peak)",
+                             _metrics.equity, _metrics.current_drawdown_pct)
+                    bot.portfolio.reset_peak_equity()
+                    _safe_dd_pct = 0.0
+
+                _closed = bot.portfolio.recent_trades(200)
+                _sharpe, _tc14 = _compute_rolling_sharpe(_closed)
                 _pstate = PortfolioState(
-                    cumulative_loss_usd=-min(0.0, _metrics.realized_pnl_total),
-                    current_drawdown_pct=_metrics.current_drawdown_pct,
+                    cumulative_loss_usd=-min(0.0, _metrics.realized_pnl),
+                    current_drawdown_pct=_safe_dd_pct,
+                    rolling_sharpe_14d=_sharpe,
+                    trade_count_14d=_tc14,
                 )
                 _kd = _kill_cond.check(_pstate)
                 if not _kd.can_trade:
@@ -459,7 +521,7 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
                 _gr = _guardrails.evaluate({
                     "equity": _metrics.equity if hasattr(_metrics, 'equity') else 0.0,
                     "start_of_day_equity": _start_of_day_equity,
-                    "current_drawdown_pct": _metrics.current_drawdown_pct,
+                    "current_drawdown_pct": _safe_dd_pct,
                 })
                 if _gr.get("permission") == "halt":
                     log.error("Guardrails HALT: %s", _gr.get("results", []))
@@ -617,6 +679,7 @@ def run_loop(cfg: dict, mode: str, once: bool = False) -> None:
             # --- TIER 5: feed monitors (non-blocking, errors are swallowed) ---
             try:
                 cycle_ok = len(result.errors) == 0
+                _cycle_count += 1
                 _sys_mon.record_cycle(result.cycle_time_ms / 1000.0, ok=cycle_ok)
                 _sys_mon.set_mt5_status(result.state != "MT5_DISCONNECTED")
                 _metrics_col.record_equity(result.equity)

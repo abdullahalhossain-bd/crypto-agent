@@ -331,7 +331,7 @@ class PaperTradingEngine:
         portfolio_state = PortfolioState(
             cumulative_loss_usd=max(0, self.initial_capital - self.cash),
             rolling_sharpe_14d=self._compute_sharpe(),
-            current_drawdown_pct=abs(self.max_drawdown) * 100,
+            current_drawdown_pct=abs(self.max_drawdown),
             rolling_brier_30d=0.15,
             paper_trade_days=len(self.trades) // 10,
         )

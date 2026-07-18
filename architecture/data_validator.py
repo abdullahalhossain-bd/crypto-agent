@@ -13,7 +13,7 @@ The caller (TradingBot._process_symbol) decides whether to skip the cycle
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import pandas as pd

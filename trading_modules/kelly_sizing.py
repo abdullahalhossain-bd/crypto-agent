@@ -59,7 +59,7 @@ DEFAULT_KELLY_FRACTION = 0.5
 MAX_KELLY_FRACTION_CAP = 0.25
 
 # Drawdown at which position size scales to zero
-MAX_DRAWDOWN_FOR_SIZING = 15.0  # 15% drawdown = zero position
+MAX_DRAWDOWN_FOR_SIZING = 0.15  # 15% drawdown = zero position
 
 
 @dataclass
@@ -118,7 +118,7 @@ def full_kelly_fraction(
     return max(0.0, f)
 
 
-def drawdown_factor(current_drawdown_pct: float, max_dd: float = 15.0) -> float:
+def drawdown_factor(current_drawdown_pct: float, max_dd: float = 0.15) -> float:
     """
     Compute drawdown adjustment factor.
 
@@ -195,7 +195,7 @@ def kelly_position_size(
 
     if dd_factor < 0.3:
         warnings.append(
-            f"⚠️ Severe drawdown ({current_drawdown_pct:.1f}%) — position reduced to {dd_factor:.0%}"
+            f"Severe drawdown ({current_drawdown_pct:.1%}) — position reduced to {dd_factor:.0%}"
         )
     if dd_factor == 0.0:
         return KellyResult(
@@ -204,7 +204,7 @@ def kelly_position_size(
             position_usd=0.0,
             position_pct=0.0,
             drawdown_factor=0.0,
-            warnings=[f"Drawdown {current_drawdown_pct:.1f}% >= max {max_drawdown_pct}% — stop trading"],
+            warnings=[f"Drawdown {current_drawdown_pct:.1%} >= max {max_drawdown_pct:.0%} — stop trading"],
         )
 
     # Step 4: Hard cap

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trading Bot Dashboard</title>
+<meta http-equiv="refresh" content="30">
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+          margin: 0; padding: 24px; background: #0e1117; color: #c9d1d9; }
+  h1   { color: #58a6ff; margin-top: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+           gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+           padding: 16px; }
+  .card .label { color: #8b949e; font-size: 12px; text-transform: uppercase;
+                  letter-spacing: 0.5px; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .good  { color: #3fb950; }
+  .bad   { color: #f85149; }
+  .neutral { color: #c9d1d9; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px;
+           background: #161b22; border-radius: 6px; overflow: hidden; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #30363d; }
+  th     { background: #21262d; color: #8b949e; text-transform: uppercase;
+            font-size: 11px; letter-spacing: 0.5px; }
+  .sparkline { width: 100%; height: 60px; margin-top: 8px; }
+  .footer { color: #6e7681; font-size: 11px; margin-top: 24px; }
+  .status-pill { display: inline-block; padding: 2px 8px; border-radius: 12px;
+                  font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .pill-approved  { background: rgba(63,185,80,0.2); color: #3fb950; }
+  .pill-rejected  { background: rgba(248,81,73,0.2); color: #f85149; }
+  .pill-executed  { background: rgba(88,166,255,0.2); color: #58a6ff; }
+  .pill-failed    { background: rgba(248,81,73,0.2); color: #f85149; }
+  .pill-pending   { background: rgba(139,148,158,0.2); color: #8b949e; }
+</style>
+</head>
+<body>
+  <h1>Trading Bot Dashboard</h1>
+  <div class="grid">
+    <div class="card"><div class="label">Equity</div><div class="value neutral">$0.00</div></div>
+<div class="card"><div class="label">Realised PnL</div><div class="value neutral">$0.00</div></div>
+<div class="card"><div class="label">Unrealised PnL</div><div class="value neutral">$0.00</div></div>
+<div class="card"><div class="label">Win rate</div><div class="value neutral">0.00%</div></div>
+<div class="card"><div class="label">Profit factor</div><div class="value neutral">0.00</div></div>
+<div class="card"><div class="label">Max drawdown</div><div class="value neutral">0.04%</div></div>
+<div class="card"><div class="label">Sharpe</div><div class="value neutral">-0.85</div></div>
+<div class="card"><div class="label">Sortino</div><div class="value neutral">-0.53</div></div>
+<div class="card"><div class="label">Gross exposure</div><div class="value neutral">0.00</div></div>
+<div class="card"><div class="label">Net exposure</div><div class="value neutral">0.00</div></div>
+<div class="card"><div class="label">Open positions</div><div class="value neutral">0</div></div>
+<div class="card"><div class="label">Total trades</div><div class="value neutral">0</div></div>
+    <div class="card" style="grid-column: 1 / -1;">
+      <div class="label">Equity curve</div>
+      <svg class="sparkline"></svg>
+    </div>
+  </div>
+
+  <h2>Recent decisions (last 20)</h2>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Symbol</th><th>Action</th><th>Status</th>
+          <th>Reason</th><th>Strategy</th></tr>
+    </thead>
+    <tbody>
+      <tr><td colspan="6" style="text-align:center;color:#6e7681;">No decisions yet</td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    Generated at 2026-07-18T11:50:35.447545+00:00 ·
+    auto-refresh every 30s ·
+    file: data/dashboard.html
+  </div>
+</body>
+</html>

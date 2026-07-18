@@ -217,7 +217,16 @@ def test_imports(verbose: bool) -> None:
         ("Observability", "architecture.decision_audit", "DecisionAuditor"),
         ("Observability", "architecture.simulation_layer", "SimulationLayer"),
         ("Observability", "trading_modules.institutional_performance_analytics", "InstitutionalPerformanceAnalytics"),
-        ("Integration", "architecture.master_orchestrator", "MasterOrchestrator"),
+        # BUG FIX: was pointed at architecture.master_orchestrator, which
+        # main.py deliberately quarantines on boot (see main.py's
+        # "CRITICAL REGRESSION GUARD" — the v9/MasterOrchestrator pipeline
+        # was retired in favor of architecture.integration.TradingBot).
+        # That made this check — and the 3 downstream tests that import
+        # MasterOrchestrator (boot, 7-layer check, E2E cycle) — permanently
+        # fail with "No module named 'architecture.master_orchestrator'"
+        # even on a perfectly healthy install. Test the class that's
+        # actually live instead.
+        ("Integration", "architecture.integration", "TradingBot"),
         ("Signals", "engine.signals_v3", "Signal"),
         ("Indicators", "utils.indicators.registry", "IndicatorEngine"),
     ]
@@ -513,57 +522,68 @@ def _clean_corrupted_dbs() -> None:
 
 
 def test_master_orchestrator(verbose: bool) -> None:
-    """Test 5: MasterOrchestrator boot + cycle."""
-    section("STEP 5: MasterOrchestrator (52 modules)")
+    """Test 5: TradingBot boot + layer check.
+
+    BUG FIX: this used to import architecture.master_orchestrator.
+    MasterOrchestrator, which main.py deliberately quarantines on every
+    boot (see main.py's "CRITICAL REGRESSION GUARD") because that v9
+    pipeline was retired in favor of architecture.integration.TradingBot.
+    So this test — on a perfectly healthy, correctly-quarantined install —
+    always failed with "No module named 'architecture.master_orchestrator'".
+    Now it boots the orchestrator that's actually live.
+    """
+    section("STEP 5: TradingBot Orchestrator")
 
     # Clean corrupted DBs first (Windows-safe)
     _clean_corrupted_dbs()
 
     def _boot():
-        from architecture.master_orchestrator import MasterOrchestrator
-        cfg = {"capital": 10000.0, "runtime": {"snapshot_dir": "data/snapshots"}}
-        bot = MasterOrchestrator(cfg)
+        from architecture.integration import TradingBot
+        cfg = {
+            "capital": 10000.0,
+            "runtime": {"snapshot_dir": "data/snapshots"},
+            "symbols": [{"name": "BTCUSD"}, {"name": "ETHUSD"}, {"name": "EURUSD"}],
+            "symbols_auto_load": False,
+        }
+        bot = TradingBot(cfg, mode="paper")
         ok = bot.boot()
-        return {"booted": ok, "modules": bot.module_count()}
-    test_step("Orchestrator", "boot (52 modules)", _boot, verbose)
+        n_symbols = len(getattr(bot, "_symbols", []))
+        bot.shutdown("diagnose.py boot test done")
+        return {"booted": ok, "symbols_loaded": n_symbols}
+    test_step("Orchestrator", "boot (TradingBot, paper mode)", _boot, verbose)
 
     def _layers():
-        from architecture.master_orchestrator import MasterOrchestrator
-        cfg = {"capital": 10000.0}
-        bot = MasterOrchestrator(cfg)
+        from architecture.integration import TradingBot
+        cfg = {
+            "capital": 10000.0,
+            "symbols": [{"name": "BTCUSD"}],
+            "symbols_auto_load": False,
+        }
+        bot = TradingBot(cfg, mode="paper")
         bot.boot()
-        modules = bot._modules
+        # These are the real attribute names TradingBot wires up in
+        # __init__ (verified against architecture/integration.py) —
+        # NOT the old MasterOrchestrator._modules dict layout, which no
+        # longer exists.
         layers = {
-            "foundation": ["event_bus", "state_machine", "snapshot_engine",
-                          "recovery_engine", "config_versioning"],
-            "perception": ["feature_pipeline", "regime_orchestrator",
-                          "market_context_engine", "market_cycle_engine",
-                          "market_phase_detector", "trend_fatigue_detector"],
-            "brain": ["multi_agent", "memory_system", "online_learner",
-                     "ai_model_manager", "decision_intelligence",
-                     "institutional_memory", "adaptive_learner",
-                     "strategy_evolution", "model_lifecycle"],
-            "defense": ["portfolio_manager", "risk_pipeline", "wisdom_gate",
-                       "self_healing", "risk_budget", "system_health",
-                       "strategy_health", "self_diagnosis"],
-            "execution": ["execution_optimizer", "exit_intelligence",
-                         "opportunity_ranker", "opportunity_cost",
-                         "strategy_router", "setup_scorer", "ev_calculator",
-                         "allocation_optimizer", "decision_engine",
-                         "emotion_filter", "capital_flow", "strength_ranker",
-                         "mtf_consensus", "smart_money"],
-            "evolution": ["continuous_improvement", "strategy_lifecycle",
-                         "weekly_audit", "missed_opportunity",
-                         "portfolio_intelligence", "portfolio_engine"],
-            "observability": ["monitor", "decision_audit", "simulation",
-                             "performance_analytics"],
+            "foundation": ["state_machine", "event_bus", "snapshot_engine",
+                           "recovery_engine", "config_versioning"],
+            "persistence": ["db", "idempotency"],
+            "perception": ["feature_pipeline", "regime_orchestrator"],
+            "brain": ["ai_model_manager", "multi_agent", "memory_system",
+                      "online_learner"],
+            "hands": ["exchange", "portfolio"],
+            "defense": ["risk_pipeline", "breakers", "self_healing",
+                        "decision_auditor"],
+            "observability": ["monitor", "simulation"],
         }
         results = {}
         for layer, expected in layers.items():
-            present = sum(1 for m in expected if m in modules)
+            present = sum(1 for attr in expected if getattr(bot, attr, None) is not None)
             results[layer] = f"{present}/{len(expected)}"
+        bot.shutdown("diagnose.py layer test done")
         return results
-    test_step("Orchestrator", "7-layer module check", _layers, verbose)
+    test_step("Orchestrator", "layer wiring check", _layers, verbose)
 
 
 def test_pipeline_steps(verbose: bool) -> None:
@@ -879,35 +899,46 @@ def test_pipeline_steps(verbose: bool) -> None:
 
 
 def test_end_to_end(verbose: bool) -> None:
-    """Test 7: End-to-end cycle with synthetic data."""
-    section("STEP 7: End-to-End Cycle (MasterOrchestrator)")
+    """Test 7: End-to-end cycle with synthetic data.
+
+    BUG FIX: was importing the retired architecture.master_orchestrator.
+    MasterOrchestrator (quarantined by main.py — see test_master_orchestrator
+    above for the full explanation). Rewritten against the live TradingBot,
+    whose cycle() takes no df_dict argument — it pulls data itself through
+    self.exchange, so synthetic data is seeded via PaperAdapter.set_candle_data()
+    before calling cycle(), matching how TradingBot actually consumes data.
+    """
+    section("STEP 7: End-to-End Cycle (TradingBot)")
 
     # Clean corrupted DBs (Windows-safe)
     _clean_corrupted_dbs()
 
     def _e2e():
-        from architecture.master_orchestrator import MasterOrchestrator
-        cfg = {"capital": 10000.0, "runtime": {"snapshot_dir": "data/snapshots"}}
-        bot = MasterOrchestrator(cfg)
+        from architecture.integration import TradingBot
+        cfg = {
+            "capital": 10000.0,
+            "runtime": {"snapshot_dir": "data/snapshots"},
+            "symbols": [{"name": "BTCUSD"}, {"name": "ETHUSD"}, {"name": "EURUSD"}],
+            "symbols_auto_load": False,
+        }
+        bot = TradingBot(cfg, mode="paper")
         bot.boot()
 
-        # Generate synthetic data for 3 symbols
-        df_dict = {
-            "BTCUSD": make_test_data(seed=1),
-            "ETHUSD": make_test_data(seed=2),
-            "EURUSD": make_test_data(seed=3),
-        }
+        # Seed synthetic data for 3 symbols into the PaperAdapter — this is
+        # how TradingBot.cycle() actually sources candles in paper mode
+        # (it calls self.exchange internally; there's no df_dict param).
+        for sym, seed in (("BTCUSD", 1), ("ETHUSD", 2), ("EURUSD", 3)):
+            bot.exchange.set_candle_data(sym, make_test_data(seed=seed))
 
-        summary = bot.cycle(df_dict)
+        result = bot.cycle()
         bot.shutdown("e2e test done")
         return {
-            "cycle": summary.cycle,
-            "state": summary.state,
-            "regime": summary.regime,
-            "signals": summary.signals_evaluated,
-            "placed": summary.trades_placed,
-            "rejected": summary.trades_rejected,
-            "time_ms": round(summary.cycle_time_ms, 0),
+            "cycle": result.cycle,
+            "state": result.state,
+            "regime": result.regime,
+            "trades_placed": result.trades_placed,
+            "trades_rejected": result.trades_rejected,
+            "time_ms": round(result.cycle_time_ms, 0),
         }
     test_step("E2E", "full cycle (3 symbols)", _e2e, verbose)
 

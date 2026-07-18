@@ -206,6 +206,59 @@ class PortfolioManager:
             p["volume"] = float(broker_volume)
             return True
 
+    def partial_close_position(self, ticket: int, exit_price: float,
+                               close_volume: float,
+                               reason: str = "partial_close") -> float:
+        """Close part of a position's volume, return realized PnL for the
+        closed portion. The remaining volume stays open under the same
+        ticket with its existing SL/TP.
+
+        Mirrors on_position_closed()'s PnL math exactly, but reduces
+        p["volume"] instead of popping the position — full pop only
+        happens if close_volume consumes the entire remaining size
+        (matches how the broker itself would report a full fill of a
+        close request for the whole remaining volume).
+        """
+        with self._lock:
+            p = self._positions.get(ticket)
+            if p is None:
+                return 0.0
+            close_volume = min(float(close_volume), p["volume"])
+            if close_volume <= 0:
+                return 0.0
+            direction = 1 if p["side"] == "BUY" else -1
+            contract_size = p.get("contract_size", 1.0)
+            pnl = (exit_price - p["entry_price"]) * close_volume * direction * contract_size
+            self._balance += pnl
+            self._realized_pnl += pnl
+            remaining = p["volume"] - close_volume
+            self._closed_trades.append({
+                "ticket": ticket,
+                "symbol": p["symbol"],
+                "side": p["side"],
+                "volume": close_volume,
+                "entry_price": p["entry_price"],
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "close_time_iso": datetime.now(tz=timezone.utc).isoformat(),
+                "reason": reason,
+            })
+            if len(self._closed_trades) > 2000:
+                self._closed_trades = self._closed_trades[-2000:]
+            if remaining <= 1e-9:
+                self._positions.pop(ticket, None)
+            else:
+                p["volume"] = remaining
+            self._bus.emit(EventType.POSITION_CLOSED,
+                           payload={"ticket": ticket, "symbol": p["symbol"],
+                                    "pnl": pnl, "exit_price": exit_price,
+                                    "closed_volume": close_volume,
+                                    "remaining_volume": max(0.0, remaining),
+                                    "partial": remaining > 1e-9,
+                                    "reason": reason},
+                           source="portfolio_manager")
+            return pnl
+
     def on_position_closed(self, ticket: int, exit_price: float,
                            reason: str = "manual") -> float:
         """Close a position, return realized PnL.
@@ -328,11 +381,11 @@ class PortfolioManager:
             if eq > self._peak_equity:
                 self._peak_equity = eq
             dd = self._peak_equity - eq
-            dd_pct = (dd / self._peak_equity * 100) if self._peak_equity > 0 else 0
+            dd_pct = (dd / self._peak_equity) if self._peak_equity > 0 else 0.0
             if dd > self._max_drawdown:
                 self._max_drawdown = dd
                 self._max_drawdown_pct = dd_pct
-                if dd_pct > 15:
+                if dd_pct > 0.15:
                     self._bus.emit(EventType.DRAWDOWN_WARNING,
                                    payload={"drawdown_pct": dd_pct,
                                             "peak": self._peak_equity,
@@ -360,6 +413,18 @@ class PortfolioManager:
             self._balance = real_equity - unrealized
             if real_equity > self._peak_equity:
                 self._peak_equity = real_equity
+
+    def reset_peak_equity(self) -> None:
+        """Reset peak equity to current balance.
+
+        Called at session start when the stored peak_equity is stale
+        (from a previous run) and would produce a false drawdown.
+        """
+        with self._lock:
+            self._peak_equity = self._balance
+            self._max_drawdown = 0.0
+            self._max_drawdown_pct = 0.0
+            log.info("portfolio: peak_equity reset to %.2f", self._balance)
 
     def set_leverage(self, leverage: int) -> None:
         """Set account leverage from broker (e.g., 1000 for 1:1000).
@@ -657,7 +722,7 @@ class PortfolioManager:
 
             # Drawdown
             dd = self._peak_equity - equity
-            dd_pct = (dd / self._peak_equity * 100) if self._peak_equity > 0 else 0
+            dd_pct = (dd / self._peak_equity) if self._peak_equity > 0 else 0.0
 
             # Co-Founder Audit Fix: gross_exposure is now LEVERAGE-ADJUSTED
             # (raw notional / leverage). This makes it comparable to equity
@@ -729,7 +794,7 @@ class PortfolioManager:
             self._max_drawdown_pct = float(data.get("max_drawdown_pct", 0.0))
             log.info("portfolio: restored from snapshot — balance=%.2f peak_equity=%.2f "
                      "max_drawdown_pct=%.2f%%",
-                     self._balance, self._peak_equity, self._max_drawdown_pct)
+                     self._balance, self._peak_equity, self._max_drawdown_pct * 100)
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -767,19 +832,27 @@ class PortfolioManager:
                 if t in phantom:
                     discrepancies.append(f"Broker ticket {t} not in local state — should be added")
                     if auto_resolve:
+                        entry_price = float(p.get("open_price", 0))
                         self._positions[t] = {
                             "ticket": t,
                             "symbol": str(p.get("symbol", "")),
-                            "side": str(p.get("side", "BUY")),
+                            "side": str(p.get("side", "BUY")).upper(),
                             "volume": float(p.get("volume", 0)),
-                            "open_price": float(p.get("open_price", 0)),
-                            "current_price": float(p.get("current_price", 0)),
-                            "sl": float(p.get("sl", 0)),
-                            "tp": float(p.get("tp", 0)),
+                            "entry_price": entry_price,
+                            # kept for backward-compat with any reader still
+                            # expecting "open_price" from this code path
+                            "open_price": entry_price,
+                            "current_price": float(p.get("current_price", entry_price)),
+                            "sl": float(p.get("sl", 0) or 0),
+                            "tp": float(p.get("tp", 0) or 0),
+                            "magic": int(p.get("magic", 0) or 0),
+                            "contract_size": float(p.get("contract_size", 1.0) or 1.0),
+                            "open_time": datetime.now(tz=timezone.utc).isoformat(),
                             "profit": float(p.get("profit", 0)),
                         }
-                        log.warning("reconcile: auto-added phantom ticket %d (%s)",
-                                    t, p.get("symbol", "?"))
+                        log.warning("reconcile: auto-added phantom ticket %d (%s %s vol=%s)",
+                                    t, p.get("symbol", "?"), p.get("side", "?"),
+                                    p.get("volume", "?"))
 
             # Volume/price mismatch
             for p in broker_positions:

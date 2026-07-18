@@ -360,7 +360,7 @@ class NewsBlackoutGate(RiskGate):
 class DrawdownGate(RiskGate):
     name = "drawdown"
 
-    def __init__(self, max_drawdown_pct: float = 15.0):
+    def __init__(self, max_drawdown_pct: float = 0.15):
         # 15% is the industry-standard prop-firm halt threshold. At 1% risk/trade
         # this allows ~15 consecutive losses before halt — well beyond the
         # ConsecutiveLossGate's 3-loss trigger, so this is a true backstop.
@@ -369,7 +369,7 @@ class DrawdownGate(RiskGate):
     def evaluate(self, ctx: RiskContext) -> RiskVerdict:
         if ctx.current_drawdown_pct > self._max_dd:
             return RiskVerdict(self.name, False,
-                              f"drawdown {ctx.current_drawdown_pct:.2f}% > {self._max_dd}%")
+                              f"drawdown {ctx.current_drawdown_pct:.2%} > {self._max_dd:.0%}")
         return RiskVerdict(self.name, True, "OK")
 
 
@@ -528,11 +528,11 @@ class SizingGate(RiskGate):
         scaling can override via config in a future phase.
         """
         dd = max(0.0, float(current_drawdown_pct))
-        if dd < 5.0:
+        if dd < 0.05:
             return 1.0
-        elif dd < 10.0:
+        elif dd < 0.10:
             return 0.75
-        elif dd < 15.0:
+        elif dd < 0.15:
             return 0.5
         else:
             return 0.25

@@ -112,7 +112,7 @@ class RiskBudgetManager:
                  weekly_risk_pct: float = 6.0,
                  monthly_risk_pct: float = 15.0,
                  max_consecutive_losses: int = 4,
-                 emergency_drawdown_pct: float = 20.0,
+                 emergency_drawdown_pct: float = 0.20,
                  recovery_win_threshold: int = 2):
         """Initialize risk budget manager.
 
@@ -190,7 +190,7 @@ class RiskBudgetManager:
             # Check emergency drawdown
             if self._state.current_drawdown_pct >= self.emergency_dd:
                 self._pause("emergency_drawdown")
-                return False, f"Emergency drawdown {self._state.current_drawdown_pct:.1f}%"
+                return False, f"Emergency drawdown {self._state.current_drawdown_pct:.1%}"
 
             # Check consecutive losses
             if self._state.consecutive_losses >= self.max_consec_losses:
@@ -255,7 +255,7 @@ class RiskBudgetManager:
             if self._state.peak_equity > 0:
                 self._state.current_drawdown_pct = (
                     (self._state.peak_equity - self._state.current_equity)
-                    / self._state.peak_equity * 100
+                    / self._state.peak_equity
                 )
 
             # Consecutive losses/wins
@@ -393,7 +393,7 @@ class RiskBudgetManager:
             if self._state.peak_equity > 0:
                 self._state.current_drawdown_pct = (
                     (self._state.peak_equity - equity)
-                    / self._state.peak_equity * 100
+                    / self._state.peak_equity
                 )
 
     # ------------------------------------------------------------------

@@ -67,7 +67,7 @@ MIN_SHARPE_ROLLING_14D = 0.0
 MIN_SHARPE_COOLDOWN_DAYS = 3
 
 # Gate 3: Maximum drawdown percentage
-MAX_DRAWDOWN_PCT = 15.0
+MAX_DRAWDOWN_PCT = 0.15
 MAX_DRAWDOWN_COOLDOWN_DAYS = 7
 
 # Gate 4: Brier score for real-money gate (lower = better calibration)
@@ -85,6 +85,7 @@ class PortfolioState:
     current_drawdown_pct: float = 0.0
     rolling_brier_30d: float = 0.25  # Default above threshold (not ready)
     paper_trade_days: int = 0
+    trade_count_14d: int = 0  # Closed trades in last 14 days (for cold-start bypass)
     # Active cooldown tracking
     active_cooldown_until: Optional[str] = None  # ISO 8601 UTC
     active_cooldown_reason: Optional[str] = None
@@ -117,6 +118,10 @@ class KillConditions:
     too long) over false-positive (system trades through danger)."
     """
 
+    # Minimum closed trades in 14d before Gate 2 (Sharpe) is enforced.
+    # Below this threshold the gate is SKIPPED (cold-start / insufficient data).
+    MIN_TRADES_FOR_SHARPE_GATE: int = 10
+
     def __init__(
         self,
         max_cumulative_loss: float = MAX_CUMULATIVE_LOSS_USD,
@@ -126,6 +131,8 @@ class KillConditions:
         max_drawdown_pct: float = MAX_DRAWDOWN_PCT,
         max_drawdown_cooldown_days: int = MAX_DRAWDOWN_COOLDOWN_DAYS,
         min_brier: float = MIN_BRIER_ROLLING_30D,
+        min_trades_for_sharpe_gate: int = 10,
+        enforce_brier_gate: bool = False,
     ):
         self.max_cumulative_loss = max_cumulative_loss
         self.max_loss_cooldown_days = max_loss_cooldown_days
@@ -134,6 +141,8 @@ class KillConditions:
         self.max_drawdown_pct = max_drawdown_pct
         self.max_drawdown_cooldown_days = max_drawdown_cooldown_days
         self.min_brier = min_brier
+        self.min_trades_for_sharpe_gate = min_trades_for_sharpe_gate
+        self.enforce_brier_gate = enforce_brier_gate
 
     def check(self, state: PortfolioState) -> KillDecision:
         """
@@ -174,18 +183,26 @@ class KillConditions:
                 checks=checks,
             )
 
-        # Gate 2: Rolling Sharpe
-        sharpe_ok = state.rolling_sharpe_14d > self.min_sharpe
-        checks["rolling_sharpe_14d"] = sharpe_ok
-        if not sharpe_ok:
-            cooldown = now + timedelta(days=self.min_sharpe_cooldown_days)
-            return KillDecision(
-                can_trade=False,
-                state="WAIT",
-                trigger_reason=f"14d rolling Sharpe {state.rolling_sharpe_14d:.2f} <= {self.min_sharpe}",
-                cooldown_until_utc=cooldown.isoformat(),
-                checks=checks,
-            )
+        # Gate 2: Rolling Sharpe (with cold-start bypass)
+        # If fewer than min_trades_for_sharpe_gate closed trades exist in the
+        # last 14 days, we skip this gate entirely — the Sharpe ratio is
+        # statistically meaningless with too few observations, and enforcing
+        # it creates a chicken-and-egg lock (need trades to prove Sharpe,
+        # but need Sharpe > 0 to trade).
+        if state.trade_count_14d < self.min_trades_for_sharpe_gate:
+            checks["rolling_sharpe_14d"] = True  # skipped — insufficient data
+        else:
+            sharpe_ok = state.rolling_sharpe_14d > self.min_sharpe
+            checks["rolling_sharpe_14d"] = sharpe_ok
+            if not sharpe_ok:
+                cooldown = now + timedelta(days=self.min_sharpe_cooldown_days)
+                return KillDecision(
+                    can_trade=False,
+                    state="WAIT",
+                    trigger_reason=f"14d rolling Sharpe {state.rolling_sharpe_14d:.2f} <= {self.min_sharpe}",
+                    cooldown_until_utc=cooldown.isoformat(),
+                    checks=checks,
+                )
 
         # Gate 3: Drawdown
         dd_ok = state.current_drawdown_pct < self.max_drawdown_pct
@@ -195,21 +212,28 @@ class KillConditions:
             return KillDecision(
                 can_trade=False,
                 state="WAIT",
-                trigger_reason=f"Drawdown {state.current_drawdown_pct:.1f}% >= {self.max_drawdown_pct}%",
+                trigger_reason=f"Drawdown {state.current_drawdown_pct:.1%} >= {self.max_drawdown_pct:.0%}",
                 cooldown_until_utc=cooldown.isoformat(),
                 checks=checks,
             )
 
         # Gate 4: Brier score (GATED, not WAIT — requires operator override)
-        brier_ok = state.rolling_brier_30d <= self.min_brier
-        checks["brier_30d"] = brier_ok
-        if not brier_ok:
-            return KillDecision(
-                can_trade=False,
-                state="GATED",
-                trigger_reason=f"30d Brier {state.rolling_brier_30d:.3f} > {self.min_brier} (requires operator override)",
-                checks=checks,
-            )
+        # This gate is ONLY enforced in real-money mode (enforce_brier_gate=True).
+        # In demo/paper mode it is always skipped — Brier calibration requires
+        # 30+ days of trade outcomes and is meaningless for a fresh bot.
+        # Use is_ready_for_real_money() for the strict paper→live transition check.
+        if self.enforce_brier_gate:
+            brier_ok = state.rolling_brier_30d <= self.min_brier
+            checks["brier_30d"] = brier_ok
+            if not brier_ok:
+                return KillDecision(
+                    can_trade=False,
+                    state="GATED",
+                    trigger_reason=f"30d Brier {state.rolling_brier_30d:.3f} > {self.min_brier} (requires operator override)",
+                    checks=checks,
+                )
+        else:
+            checks["brier_30d"] = True  # skipped — not enforcing in demo/paper
 
         # All gates passed
         return KillDecision(

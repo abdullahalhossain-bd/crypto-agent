@@ -511,7 +511,8 @@ class ExecutionEngine:
 
         Deriv typically supports ORDER_FILLING_IOC (2).
         Some symbols support FOK (1).
-        Fallback: try IOC first, then FOK, then RETURN.
+        If neither bit is advertised (filling_mode == 0), the symbol only
+        supports market execution and requires ORDER_FILLING_RETURN.
         """
         if self.conn is None or mt5 is None:
             return _ORDER_FILLING_IOC  # Deriv default
@@ -525,8 +526,14 @@ class ExecutionEngine:
                 return _ORDER_FILLING_IOC
             if modes & 1:  # FOK
                 return _ORDER_FILLING_FOK
-            # If filling_mode is 0, Deriv usually accepts IOC
-            return _ORDER_FILLING_IOC
+            # filling_mode == 0 means the broker did not advertise FOK/IOC
+            # support at all — per MT5 semantics this means the symbol only
+            # supports market execution, which requires ORDER_FILLING_RETURN.
+            # Sending IOC/FOK here is rejected by the server with
+            # retcode=10030 "Unsupported filling mode" (see CADJPY rejection
+            # in system.log). This was previously defaulting to IOC, which
+            # is the bug.
+            return _ORDER_FILLING_RETURN
         except Exception:
             return _ORDER_FILLING_IOC
 

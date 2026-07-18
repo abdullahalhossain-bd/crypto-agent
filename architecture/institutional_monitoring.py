@@ -182,7 +182,7 @@ class InstitutionalMonitor:
             kpis["total_return_pct"] = ((current - self._initial_equity) /
                                        max(self._initial_equity, 1)) * 100
             kpis["peak_equity"] = self._peak_equity
-            drawdown = (self._peak_equity - current) / max(self._peak_equity, 1) * 100
+            drawdown = (self._peak_equity - current) / max(self._peak_equity, 1)
             kpis["current_drawdown_pct"] = drawdown
             kpis["max_drawdown_pct"] = self._compute_max_drawdown(eq_series)
             # Sharpe (per-trade, annualized later)
@@ -241,7 +241,7 @@ class InstitutionalMonitor:
         for v in series:
             if v > peak:
                 peak = v
-            dd = (peak - v) / max(peak, 1) * 100
+            dd = (peak - v) / max(peak, 1)
             if dd > max_dd:
                 max_dd = dd
         return max_dd
@@ -275,12 +275,12 @@ class InstitutionalMonitor:
 
         # Drawdown alerts
         dd = kpis.get("current_drawdown_pct", 0)
-        _check("drawdown_emergency", dd > 15, "EMERGENCY",
-               f"Drawdown {dd:.2f}% exceeds 15% — halt trading", dd, 15.0)
-        _check("drawdown_critical", dd > 10, "CRITICAL",
-               f"Drawdown {dd:.2f}% exceeds 10%", dd, 10.0)
-        _check("drawdown_warning", dd > 5, "WARNING",
-               f"Drawdown {dd:.2f}% — monitor", dd, 5.0)
+        _check("drawdown_emergency", dd > 0.15, "EMERGENCY",
+               f"Drawdown {dd:.2%} exceeds 15% — halt trading", dd, 0.15)
+        _check("drawdown_critical", dd > 0.10, "CRITICAL",
+               f"Drawdown {dd:.2%} exceeds 10%", dd, 0.10)
+        _check("drawdown_warning", dd > 0.05, "WARNING",
+               f"Drawdown {dd:.2%} — monitor", dd, 0.05)
 
         # Win rate alerts
         wr = kpis.get("win_rate", 0.5)

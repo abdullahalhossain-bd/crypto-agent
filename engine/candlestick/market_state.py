@@ -31,6 +31,12 @@ import numpy as np
 import pandas as pd
 
 from utils.indicators import atr
+from utils.logger import get_logger
+
+# BUG FIX: `log` was used in classify()'s except-handler but never defined
+# anywhere in this module, so a classifier failure raised NameError instead
+# of falling back safely to a low-confidence RANGE state as intended.
+log = get_logger("engine.candlestick.market_state")
 
 
 @dataclass

@@ -26,11 +26,17 @@ from typing import Any, Optional
 # Formatters
 # ----------------------------------------------------------------------
 class _TextFormatter(logging.Formatter):
-    """Human-readable, single-line, with UTC timestamp + level."""
+    """Human-readable, single-line, with UTC timestamp (ms precision) + level.
+
+    Millisecond precision matters here: the bot can place several orders
+    or evaluate several symbols within the same wall-clock second, and
+    second-only timestamps made it impossible to reconstruct the true
+    event order from the log file alone.
+    """
 
     def __init__(self) -> None:
         super().__init__(
-            fmt="%(asctime)s | %(levelname)-7s | %(name)-18s | %(message)s",
+            fmt="%(asctime)s.%(msecs)03d UTC | %(levelname)-7s | %(name)-28s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
         self.converter = lambda *a: datetime.now(tz=timezone.utc).timetuple()
@@ -91,7 +97,23 @@ def setup_logger(
 
     fmt_cls = _JsonFormatter if json_logs else _TextFormatter
 
-    # Console formatter: cleaner, shorter — no logger name (just time/level/msg)
+    # Console formatter: cleaner, shorter — no logger name (just time/level/msg).
+    # Color-codes the level so a scrolling terminal is scannable at a glance
+    # (errors jump out red, warnings amber) without touching the file logs,
+    # which stay plain text for grep/tooling. Disabled automatically when
+    # stdout isn't a real terminal (e.g. redirected to a file, run under
+    # systemd/supervisor) or when NO_COLOR is set, so piped output never
+    # contains stray escape codes.
+    _LEVEL_COLORS = {
+        "DEBUG": "\033[2m",       # dim
+        "INFO": "\033[0m",        # default
+        "WARNING": "\033[33m",    # yellow
+        "ERROR": "\033[31;1m",    # bold red
+        "CRITICAL": "\033[41;97;1m",  # white-on-red
+    }
+    _RESET = "\033[0m"
+    _use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
     class _ConsoleFormatter(logging.Formatter):
         def __init__(self) -> None:
             super().__init__(
@@ -99,6 +121,14 @@ def setup_logger(
                 datefmt="%H:%M:%S",
             )
             self.converter = lambda *a: datetime.now(tz=timezone.utc).timetuple()
+
+        def format(self, record: logging.LogRecord) -> str:
+            line = super().format(record)
+            if _use_color:
+                color = _LEVEL_COLORS.get(record.levelname, "")
+                if color:
+                    line = f"{color}{line}{_RESET}"
+            return line
 
     # ---------------- system logger ----------------
     sys_logger = logging.getLogger(name)
@@ -156,9 +186,27 @@ def get_trade_logger() -> logging.Logger:
     return logging.getLogger("trading_bot.trades")
 
 
+def _kv_format(value: Any) -> str:
+    """Render a single trade-log field value, quoting it if it contains
+    whitespace so `key=value key2=value2` parsing stays unambiguous.
+
+    BUG FIX: symbol names on this broker routinely contain spaces
+    (e.g. "BTCUSD RSI Trend Down Index", "Crash 100 Index"). Emitting
+    those unquoted — `symbol=Crash 100 Index side=SELL` — makes it
+    impossible for any downstream parser (or a human with `awk`) to know
+    where the symbol value ends and the next field begins. Quoting only
+    when needed keeps the common case (numbers, tickers without spaces)
+    exactly as before.
+    """
+    text = str(value)
+    if " " in text or "\t" in text:
+        return '"' + text.replace('"', '\\"') + '"'
+    return text
+
+
 def log_trade(event: str, **fields: Any) -> None:
     """Helper: emit one structured trade event."""
     msg = f"TRADE_EVENT={event}"
     if fields:
-        msg += " " + " ".join(f"{k}={v}" for k, v in fields.items())
+        msg += " " + " ".join(f"{k}={_kv_format(v)}" for k, v in fields.items())
     get_trade_logger().info(msg, extra={"event": event, **fields})

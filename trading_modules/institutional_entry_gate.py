@@ -99,6 +99,11 @@ from typing import Optional, Any
 import numpy as np
 import pandas as pd
 
+# BUG FIX: regime_allows_trading() is called in evaluate() (Step 1.5) but
+# was never imported — every call would raise NameError at that point,
+# crashing entry evaluation unconditionally once regime detection ran.
+from trading_modules.market_regime import regime_allows_trading
+
 # Critical #1 fix: all confluence module imports are now LAZY (inside
 # __init__) so that a missing or broken module doesn't crash the entire
 # entry gate on import. Each module is imported individually with a

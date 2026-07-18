@@ -265,7 +265,7 @@ class InstitutionalPerformanceAnalytics:
         r.peak_equity = self._peak
         current_dd = self._peak - current_equity
         r.current_drawdown = current_dd
-        r.current_drawdown_pct = (current_dd / max(self._peak, 1)) * 100
+        r.current_drawdown_pct = (current_dd / max(self._peak, 1))
 
         # === Calmar ===
         if r.max_drawdown_pct > 0:
