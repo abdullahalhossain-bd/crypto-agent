@@ -28,8 +28,7 @@ Produces:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -205,15 +204,13 @@ class Backtester:
                     # prevents a TypeError crash if the risk interface changes.
                     risk_result = self.risk.evaluate(ctx)
                     if isinstance(risk_result, tuple) and len(risk_result) == 3:
-                        approved, final_verdict, all_verdicts = risk_result
+                        approved, final_verdict, _all_verdicts = risk_result
                     elif isinstance(risk_result, tuple) and len(risk_result) == 2:
                         approved, final_verdict = risk_result
-                        all_verdicts = [final_verdict] if final_verdict else []
                     else:
                         # Single object — treat it as the final verdict.
                         final_verdict = risk_result
                         approved = getattr(final_verdict, "passed", False)
-                        all_verdicts = [final_verdict] if final_verdict else []
                     if approved:
                         fill_px = self._fill_price(final_verdict, df, i)
                         # Apply slippage against us

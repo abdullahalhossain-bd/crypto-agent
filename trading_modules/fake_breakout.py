@@ -154,14 +154,12 @@ class FakeBreakoutDetector:
 
         # Fake breakout: price closed back inside the level
         if direction == "BUY" and last_close < level:
-            is_fake = True
             notes.append(f"closed back below level ({last_close:.2f} < {level:.2f})")
             return BreakoutResult(
                 is_fake=True, broke_level=True, closed_beyond=closed_beyond,
                 volume_supports=volume_supports, breakout_type="fake", notes=notes,
             )
         if direction == "SELL" and last_close > level:
-            is_fake = True
             notes.append(f"closed back above level ({last_close:.2f} > {level:.2f})")
             return BreakoutResult(
                 is_fake=True, broke_level=True, closed_beyond=closed_beyond,

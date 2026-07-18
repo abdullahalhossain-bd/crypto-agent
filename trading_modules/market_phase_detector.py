@@ -39,11 +39,10 @@ Usage:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
-import numpy as np
 import pandas as pd
 
 from utils.logger import get_logger
@@ -143,13 +142,9 @@ class MarketPhaseDetector:
             return PhaseResult()
 
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
-        vol = df.get("volume", pd.Series(1, index=df.index))
 
         # Get recent window
         window = df.tail(self.range_lookback)
-        w_close = window["close"]
         w_high = window["high"]
         w_low = window["low"]
         w_vol = window["volume"]
@@ -212,7 +207,7 @@ class MarketPhaseDetector:
                     volume_trend, squeeze, spring_detected, price_position)
                 result.sub_phase = self._accumulation_subphase(
                     volume_trend, spring_detected, price_position)
-                result.description = f"Accumulation after downtrend — smart money buying"
+                result.description = "Accumulation after downtrend — smart money buying"
             elif pre_trend == "up":
                 # After uptrend = distribution
                 result.phase = MarketPhase.DISTRIBUTION
@@ -220,7 +215,7 @@ class MarketPhaseDetector:
                     volume_trend, squeeze, utad_detected, price_position)
                 result.sub_phase = self._distribution_subphase(
                     volume_trend, utad_detected, price_position)
-                result.description = f"Distribution after uptrend — smart money selling"
+                result.description = "Distribution after uptrend — smart money selling"
             else:
                 # After flat = consolidation (treat as accumulation-ish)
                 result.phase = MarketPhase.ACCUMULATION

@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -334,6 +334,54 @@ class IndicatorEngine:
         self.registry.register("gap_pct", lambda df: features.gap_pct(df),
                               "ai_feature", 1)
 
+        # Statistics
+        self.registry.register("zscore_20", lambda df: statistics.zscore(df["close"], 20),
+                              "statistics", 20)
+        self.registry.register("rolling_std_20", lambda df: statistics.rolling_std(df["close"], 20),
+                              "statistics", 20)
+        self.registry.register("skewness_20", lambda df: statistics.skewness(df["close"], 20),
+                              "statistics", 20)
+        self.registry.register("kurtosis_20", lambda df: statistics.kurtosis(df["close"], 20),
+                              "statistics", 20)
+        self.registry.register("hurst_exponent", lambda df: statistics.hurst_exponent(df["close"]),
+                              "statistics", 40)
+        self.registry.register("stationarity_score", lambda df: statistics.stationarity_score(df["close"], 50),
+                              "statistics", 50)
+
+        # Candlestick patterns
+        self.registry.register("doji", lambda df: candles.detect_doji(df),
+                              "candles", 1)
+        self.registry.register("hammer", lambda df: candles.detect_hammer(df),
+                              "candles", 1)
+        self.registry.register("bullish_engulfing", lambda df: candles.detect_bullish_engulfing(df),
+                              "candles", 2)
+        self.registry.register("bearish_engulfing", lambda df: candles.detect_bearish_engulfing(df),
+                              "candles", 2)
+        self.registry.register("three_white_soldiers", lambda df: candles.detect_three_white_soldiers(df),
+                              "candles", 3)
+        self.registry.register("three_black_crows", lambda df: candles.detect_three_black_crows(df),
+                              "candles", 3)
+
+        # Smart Money Concepts (SMC/ICT)
+        self.registry.register("bullish_fvg", lambda df: smc.detect_fvg(df)["bullish_fvg"],
+                              "smc", 3)
+        self.registry.register("bearish_fvg", lambda df: smc.detect_fvg(df)["bearish_fvg"],
+                              "smc", 3)
+        self.registry.register("bullish_order_block", lambda df: smc.detect_order_block(df)["bullish_ob"],
+                              "smc", 10)
+        self.registry.register("bearish_order_block", lambda df: smc.detect_order_block(df)["bearish_ob"],
+                              "smc", 10)
+        self.registry.register("imbalance", lambda df: smc.detect_imbalance(df),
+                              "smc", 3)
+
+        # Market structure
+        self.registry.register("break_of_structure", lambda df: structure.break_of_structure(df),
+                              "structure", 5)
+        self.registry.register("change_of_character", lambda df: structure.change_of_character(df),
+                              "structure", 5)
+        self.registry.register("liquidity_sweep", lambda df: structure.liquidity_sweep(df),
+                              "structure", 20)
+
     # ------------------------------------------------------------------
     # Calculate single
     # ------------------------------------------------------------------
@@ -451,7 +499,6 @@ class IndicatorEngine:
         """Compute the 6 risk features for the risk engine."""
         from utils.indicators.volatility import atr, atr_pct
         from utils.indicators.trend import adx, trend_score
-        from utils.indicators import features
 
         try:
             atr_val = float(atr(df, 14).iloc[-1])

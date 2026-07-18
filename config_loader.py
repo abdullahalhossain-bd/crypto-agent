@@ -253,7 +253,7 @@ def load_config(path: str = DEFAULT_PATH, validate: bool = True,
     if validate:
         if _PYDANTIC_AVAILABLE:
             try:
-                validated = TradingBotConfig(**cfg)
+                _ = TradingBotConfig(**cfg)
                 log.info("config: schema validation passed")
             except ValidationError as e:
                 log.error("config: schema validation FAILED:\n%s", e)

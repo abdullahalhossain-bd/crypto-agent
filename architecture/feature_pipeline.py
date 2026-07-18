@@ -50,11 +50,10 @@ from __future__ import annotations
 
 import hashlib
 import threading
-import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -461,6 +460,12 @@ def build_default_pipeline() -> FeaturePipeline:
                   lambda df: float(sma(df["close"], 50).iloc[-1]) if len(df) >= 50 else 0.0)
     pipe.register("vwap", "ma", "1.0", "VWAP", 1,
                   lambda df: float(vwap(df).iloc[-1]))
+    pipe.register("wma_20", "ma", "1.0", "WMA 20", 20,
+                  lambda df: float(wma(df["close"], 20).iloc[-1]))
+    pipe.register("vwma_20", "ma", "1.0", "VWMA 20", 20,
+                  lambda df: float(vwma(df, 20).iloc[-1]))
+    pipe.register("hull_ma_20", "ma", "1.0", "Hull MA 20", 20,
+                  lambda df: float(hull_ma(df["close"], 20).iloc[-1]))
 
     # ---- Momentum ----
     pipe.register("rsi_14", "momentum", "1.0", "RSI 14", 14,
@@ -482,6 +487,8 @@ def build_default_pipeline() -> FeaturePipeline:
                   lambda df: float(williams_r(df, 14).iloc[-1]))
     pipe.register("mfi_14", "momentum", "1.0", "Money Flow Index 14", 14,
                   lambda df: float(mfi(df, 14).iloc[-1]))
+    pipe.register("tsi", "momentum", "1.0", "True Strength Index", 38,
+                  lambda df: float(tsi(df["close"]).iloc[-1]))
 
     # ---- Volatility ----
     pipe.register("atr_14", "volatility", "1.0", "ATR 14", 14,
@@ -492,12 +499,26 @@ def build_default_pipeline() -> FeaturePipeline:
                   lambda df: float(bollinger_bands(df["close"], 20)[3].iloc[-1]))  # P0-6 fix: [3] is width, not [2]
     pipe.register("hist_vol_20", "volatility", "1.0", "20-bar hist vol", 20,
                   lambda df: float(historical_volatility(df["close"], 20).iloc[-1]))
+    pipe.register("keltner_mid", "volatility", "1.0", "Keltner Channel middle", 20,
+                  lambda df: float(keltner_channel(df, 20)[1].iloc[-1]))
+    pipe.register("donchian_mid", "volatility", "1.0", "Donchian Channel middle", 20,
+                  lambda df: float(donchian_channel(df, 20)[1].iloc[-1]))
 
     # ---- Trend ----
     pipe.register("adx_14", "trend", "1.0", "ADX 14", 14,
                   lambda df: float(adx(df, 14).iloc[-1]))
     pipe.register("supertrend", "trend", "1.0", "SuperTrend", 10,
                   lambda df: float(supertrend(df, 10, 3).iloc[-1]))
+    pipe.register("dmi_plus", "trend", "1.0", "+DI 14", 28,
+                  lambda df: float(dmi(df, 14)[0].iloc[-1]))
+    pipe.register("dmi_minus", "trend", "1.0", "-DI 14", 28,
+                  lambda df: float(dmi(df, 14)[1].iloc[-1]))
+    pipe.register("ichimoku_tenkan", "trend", "1.0", "Ichimoku Tenkan-sen", 52,
+                  lambda df: float(ichimoku(df)["tenkan"].iloc[-1]))
+    pipe.register("ichimoku_kijun", "trend", "1.0", "Ichimoku Kijun-sen", 52,
+                  lambda df: float(ichimoku(df)["kijun"].iloc[-1]))
+    pipe.register("close_slope_5", "trend", "1.0", "Close price slope (5-bar)", 5,
+                  lambda df: float(slope(df["close"], 5).iloc[-1]))
 
     # ---- Volume ----
     pipe.register("obv", "volume", "1.0", "On-Balance Volume", 1,
@@ -506,6 +527,10 @@ def build_default_pipeline() -> FeaturePipeline:
                   lambda df: float(rvol(df, 20).iloc[-1]))
     pipe.register("cmf", "volume", "1.0", "Chaikin Money Flow", 20,
                   lambda df: float(cmf(df, 20).iloc[-1]))
+    pipe.register("adl", "volume", "1.0", "Accumulation/Distribution Line", 1,
+                  lambda df: float(adl(df).iloc[-1]))
+    pipe.register("pvt", "volume", "1.0", "Price-Volume Trend", 1,
+                  lambda df: float(pvt(df).iloc[-1]))
 
     # ---- SMC / ICT ----
     # FIX: previously called detect_fvg(df)/detect_order_block(df) TWICE
@@ -517,6 +542,8 @@ def build_default_pipeline() -> FeaturePipeline:
                   lambda df: _last_bool(detect_fvg(df)))
     pipe.register("order_block", "smc", "1.0", "Order Block detected", 3,
                   lambda df: _last_bool(detect_order_block(df)))
+    pipe.register("liquidity_sweep", "smc", "1.0", "Liquidity sweep (stop hunt) detected", 20,
+                  lambda df: _last_bool(detect_liquidity_sweep(df)))
 
     # ---- Regime ----
     pipe.register("regime", "regime", "1.0", "Market regime", 50,

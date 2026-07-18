@@ -26,8 +26,6 @@ import shutil
 import time
 import contextlib
 from datetime import datetime, timezone
-from typing import Optional, Any
-from dataclasses import dataclass
 
 from utils.logger import get_logger
 
@@ -376,7 +374,6 @@ class Database:
                 log.warning("DB: trade close — ticket %d not found", ticket)
                 return False
             entry = float(row["entry_price"])
-            lots = float(row["lots"])
             # P0-16 fix: PnL% must account for trade direction (action).
             # For BUY: pnl% = (exit - entry) / entry
             # For SELL: pnl% = (entry - exit) / entry

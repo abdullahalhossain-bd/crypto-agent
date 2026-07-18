@@ -67,12 +67,9 @@ from architecture.event_bus import EventBus, EventType, get_bus
 from architecture.exchange_abstraction import (
     ExchangeInterface, OrderRequest, OrderSide, create_exchange,
 )
-from architecture.feature_pipeline import FeaturePipeline, FeatureVector, get_pipeline
+from architecture.feature_pipeline import FeaturePipeline, get_pipeline
 from architecture.institutional_monitoring import InstitutionalMonitor
 from architecture.memory_system import MemorySystem
-from architecture.multi_agent import (
-    Consensus, MultiAgentCoordinator, build_default_coordinator,
-)
 from architecture.online_learning import OnlineLearner
 from architecture.portfolio_manager_v2 import PortfolioManager
 from architecture.recovery_engine import (
@@ -81,7 +78,7 @@ from architecture.recovery_engine import (
 from architecture.regime_orchestrator import (
     MarketRegime, RegimeOrchestrator,
 )
-from architecture.risk_pipeline import RiskContext, RiskPipeline
+from architecture.risk_pipeline import RiskPipeline
 from architecture.self_healing import SelfHealingSystem
 from architecture.simulation_layer import SimulationLayer
 from architecture.state_machine import BotState, StateMachine, get_state_machine
@@ -760,7 +757,6 @@ class TradingBot:
         max_spread_bps = float(uf_cfg.get("max_spread_bps",
                                           self._cfg.get("risk", {}).get(
                                               "max_spread_bps", 15.0)))
-        min_volume_pctile = float(uf_cfg.get("min_volume_pctile", 0.20))
         # Drop suffix-duplicates: AUDNZDmicro if AUDNZD exists, BTCUSD.conv
         # if BTCUSD exists, etc. The "base" symbol is preferred.
         drop_variants = bool(uf_cfg.get("drop_variant_suffixes", True))
@@ -777,7 +773,6 @@ class TradingBot:
             # Build a set of "base" symbol names present in the list.
             # Then drop any symbol whose name is base+suffix.
             if drop_variants:
-                base_set = set(not_open)
                 survivors = []
                 dropped_variants = []
                 for s in not_open:
@@ -1499,12 +1494,10 @@ class TradingBot:
         # Review Point 4: distinguish "check ran and passed" from "check
         # failed to run" — the latter is logged at WARNING so silent
         # gate-skips are visible in the audit trail.
-        mtf_checked = False
         try:
             from engine.candlestick.multi_timeframe import MultiTimeframeConfirmator
             mtf = MultiTimeframeConfirmator()
             mtf_result = mtf.confirm(df)
-            mtf_checked = True
             if self._trace_enabled:
                 log.info("TRACE %s │ MTF: score=%.0f aligned=%s dominant=%s",
                          symbol, mtf_result.score, mtf_result.aligned,
@@ -1516,17 +1509,16 @@ class TradingBot:
                 result.funnel["mtf_fail"] = result.funnel.get("mtf_fail", 0) + 1
                 return
         except Exception as e:
+            result.funnel["mtf_check_skipped"] = result.funnel.get("mtf_check_skipped", 0) + 1
             log.warning("TradingBot: MTF gate SKIPPED for %s (check crashed): %r "
                        "— trade proceeds without MTF confirmation", symbol, e)
 
         # ── Phase 5 #27: False-breakout filtering ────────────────────────
         # Reject signals where the breakout is likely fake.
-        fb_checked = False
         try:
             from engine.candlestick.false_breakout import FalseBreakoutDetector
             fb_detector = FalseBreakoutDetector()
             fb_result = fb_detector.detect(df)
-            fb_checked = True
             if fb_result.probability > 0.7:  # >70% likely fake = skip
                 self._record_skip(symbol, equity, fv, consensus, result,
                                   reason=f"FakeBreakoutGate:prob={fb_result.probability:.0%} "
@@ -1534,6 +1526,7 @@ class TradingBot:
                 result.funnel["fakeout_fail"] = result.funnel.get("fakeout_fail", 0) + 1
                 return
         except Exception as e:
+            result.funnel["fakeout_check_skipped"] = result.funnel.get("fakeout_check_skipped", 0) + 1
             log.warning("TradingBot: fakeout gate SKIPPED for %s (check crashed): %r "
                        "— trade proceeds without fakeout filter", symbol, e)
 
@@ -1598,7 +1591,7 @@ class TradingBot:
         # to every gate via RiskContext.
         _pipeline_state: Dict[str, Any] = {}
         try:
-            from utils.indicators import atr as _atr_fn, atr_pct as _atr_pct_fn
+            from utils.indicators import atr as _atr_fn
             _atr_series = _atr_fn(df, 14)
             if len(_atr_series) > 0 and not pd.isna(_atr_series.iloc[-1]):
                 _atr_val = float(_atr_series.iloc[-1])
@@ -1741,8 +1734,8 @@ class TradingBot:
                     log.warning("TradingBot: daily loss halt PERSISTED to %s "
                                "(expires at next UTC midnight)", self._state_file)
                     self._notify("Daily Loss Halt Triggered",
-                                f"Daily loss limit breached. Trading halted until "
-                                f"UTC midnight. Persisted to state file.")
+                                "Daily loss limit breached. Trading halted until "
+                                "UTC midnight. Persisted to state file.")
                 except Exception as e:
                     log.error("TradingBot: could not persist daily loss halt: %r", e)
             return
@@ -1893,8 +1886,11 @@ class TradingBot:
                     recent = self.portfolio.recent_trades(n=30)
                     if len(recent) >= 10:
                         wins = [t for t in recent if t["pnl"] > 0]
-                        losses = [t for t in recent if t["pnl"] < 0]
                         wr = len(wins) / len(recent) if recent else 0.5
+                        # NOTE: trade records only store raw currency PnL,
+                        # not the risk amount at entry, so a true R-multiple
+                        # can't be derived here. These remain conservative
+                        # defaults until per-trade risk is persisted.
                         avg_win_r = 2.0  # default R:R assumption
                         avg_loss_r = 1.0
                         ev_result = ev_calc.calculate(
@@ -2160,7 +2156,7 @@ class TradingBot:
         D = "─" * (W + 2)
 
         def header(title: str) -> str:
-            return f"\n{'─' * (W + 2)}\n {title}\n{'─' * (W + 2)}"
+            return f"\n{D}\n {title}\n{D}"
 
         def row(label: str, value: str, indent: int = 0) -> str:
             pad = " " * indent
@@ -2355,15 +2351,16 @@ class TradingBot:
         now_str = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         lines.append("")
-        lines.append("═" * 70)
+        lines.append(B)
         lines.append(" AI TRADING DECISION REPORT")
-        lines.append("═" * 70)
+        lines.append(B)
         lines.append("")
         lines.append(f" Symbol        : {symbol}")
-        lines.append(f" Timeframe     : M15")
+        lines.append(" Timeframe     : M15")
         lines.append(f" Session       : {self._trading_session()}")
         lines.append(f" Timestamp     : {now_str}")
         lines.append(f" Bar Close     : {bar_close:.5f}" if bar_close > 0 else " Bar Close     : N/A")
+        lines.append(f" Bar Time      : {bar_time_str}" if bar_time_str else " Bar Time      : N/A")
         lines.append(f" Cycle         : {self._cycle}")
 
         # ── MARKET STATE ───────────────────────────────────────────
@@ -2400,6 +2397,8 @@ class TradingBot:
         # ── RISK ENGINE ────────────────────────────────────────────
         lines.append(header("RISK ENGINE"))
         lines.append(row("Risk Approved", "YES" if risk_approved else "NO"))
+        if risk_reason:
+            lines.append(row("Risk Reason", str(risk_reason)))
         if kelly_mult > 0:
             lines.append(row("Kelly Multiplier", f"{kelly_mult:.2f}x"))
         lines.append(row("Min Signal Strength", f"{self._min_signal_strength:.2f}"))
@@ -2744,14 +2743,22 @@ class TradingBot:
             win_rate = len(wins) / len(pnls)
             avg_win = sum(wins) / len(wins) if wins else 0
             avg_loss = abs(sum(losses) / len(losses))
-            # Simple decay check: if win rate < 35% over last 50 trades
-            if win_rate < 0.35:
+            # Decay check: use actual expectancy (win_rate * avg_win -
+            # loss_rate * avg_loss), not a bare win-rate threshold. A
+            # low win-rate strategy can still be profitable if avg_win
+            # is large relative to avg_loss, and a high win-rate
+            # strategy can be losing money if avg_loss dwarfs avg_win.
+            loss_rate = 1.0 - win_rate
+            expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+            if expectancy < 0:
                 self._decayed_strategies.add("multi_agent")
                 log.warning("TradingBot: strategy decay detected — win_rate=%.0f%% "
+                           "avg_win=%.2f avg_loss=%.2f expectancy=%.2f "
                            "over last %d trades. Strategy excluded from routing.",
-                           win_rate * 100, len(pnls))
+                           win_rate * 100, avg_win, avg_loss, expectancy, len(pnls))
                 self._notify("Strategy Decay Detected",
-                            f"Win rate {win_rate:.0%} over last {len(pnls)} trades.\n"
+                            f"Win rate {win_rate:.0%}, expectancy {expectancy:.2f} "
+                            f"over last {len(pnls)} trades.\n"
                             f"Strategy paused — manual review required.")
         except Exception as e:
             log.debug("TradingBot: decay detection failed: %r", e)

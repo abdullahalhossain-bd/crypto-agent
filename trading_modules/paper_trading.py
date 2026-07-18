@@ -40,8 +40,7 @@ import requests
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Any
-from collections import deque
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -526,7 +525,7 @@ class PaperTradingEngine:
             gain = delta.where(delta > 0, 0).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / loss.replace(0, 1e-10)
-            rsi = float(50 + (100 * (gain - loss) / (gain + loss).replace(0, 1e-10)).iloc[-1])
+            rsi = float((100 - (100 / (1 + rs))).iloc[-1])
             rsi = max(0, min(100, rsi))
 
             # Volume ratio
@@ -788,7 +787,7 @@ class PaperTradingEngine:
         """Get human-readable summary."""
         status = self.get_status()
         lines = [
-            f"📊 Paper Trading Status",
+            "📊 Paper Trading Status",
             f"   Equity: ${status.equity:,.2f} (return: {status.total_return_pct:+.2%})",
             f"   Cash: ${status.cash:,.2f}",
             f"   Open positions: {status.open_positions}",
@@ -799,7 +798,7 @@ class PaperTradingEngine:
         ]
 
         if self.positions:
-            lines.append(f"\n   Open Positions:")
+            lines.append("\n   Open Positions:")
             for p in self.positions:
                 lines.append(
                     f"     {p.symbol} {p.side} @ ${p.entry_price:.2f} "

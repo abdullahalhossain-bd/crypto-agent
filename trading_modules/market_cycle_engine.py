@@ -33,9 +33,9 @@ Usage:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -148,9 +148,6 @@ class MarketCycleEngine:
             return result
 
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
-        vol = df.get("volume", pd.Series(1, index=df.index))
 
         # Use lookback window
         n = min(len(df), self.lookback)
@@ -302,8 +299,8 @@ class MarketCycleEngine:
                 f"Strategy: take profits, reduce size."
             ),
             CyclePhase.CONSOLIDATION: (
-                f"CONSOLIDATION phase — range-bound, low volatility. "
-                f"Strategy: range trading, small size."
+                "CONSOLIDATION phase — range-bound, low volatility. "
+                "Strategy: range trading, small size."
             ),
             CyclePhase.DECLINE: (
                 f"DECLINE phase — price falling ({r.price_trend:+.2f}), "

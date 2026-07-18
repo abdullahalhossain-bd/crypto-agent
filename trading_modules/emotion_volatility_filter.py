@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -150,8 +150,6 @@ class EmotionVolatilityFilter:
             return state
 
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
         vol = df.get("volume", pd.Series(1, index=df.index))
 
         # === 1. Price change (last bar) ===
@@ -265,9 +263,9 @@ class EmotionVolatilityFilter:
                          f"(pctile={state.volatility_percentile:.0%}) with declining price.",
             Emotion.CAPITULATION: f"CAPITULATION — massive volume ({state.volume_ratio:.1f}x) "
                                  f"with {state.price_change_pct:.1f}% drop. Reversal likely.",
-            Emotion.GREED: f"GREED — overbought with tight spread. Late buyers entering.",
-            Emotion.COMPLACENCY: f"COMPLACENCY — low volatility, low volume. "
-                                f"Market waiting for direction.",
+            Emotion.GREED: "GREED — overbought with tight spread. Late buyers entering.",
+            Emotion.COMPLACENCY: "COMPLACENCY — low volatility, low volume. "
+                                "Market waiting for direction.",
             Emotion.NEUTRAL: "Market is neutral — normal trading conditions.",
         }
         return descs.get(state.emotion, "Unknown emotion")

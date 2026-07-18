@@ -32,7 +32,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -116,9 +116,6 @@ class TrendFatigueDetector:
             result.description = "insufficient data"
             return result
 
-        close = df["close"]
-        high = df["high"]
-        low = df["low"]
         vol = df.get("volume", pd.Series(1, index=df.index))
 
         # === 1. ATR drop ===
@@ -248,12 +245,14 @@ class TrendFatigueDetector:
 
     def _detect_structure_weakening(self, df: pd.DataFrame,
                                      direction: str) -> bool:
-        """Smaller thrusts, shallower pullbacks."""
+        """Detect smaller price thrusts (bar-to-bar move size shrinking).
+
+        NOTE: only compares close-to-close thrust magnitude; it does not
+        currently measure pullback depth (would need high/low range).
+        """
         if len(df) < 40:
             return False
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
 
         # Compare recent thrust size vs older thrust size
         recent_thrusts = []

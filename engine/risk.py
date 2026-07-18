@@ -67,14 +67,11 @@ Institutional Design Goals
 from __future__ import annotations
 
 import math
-import os
 import threading
-import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, Callable
+from typing import Any, Optional
 
-import numpy as np
 import pandas as pd
 
 from engine.signals import Signal, Action
@@ -262,9 +259,10 @@ class RiskManager:
         self.min_volume_ratio = float(cfg.get("min_volume_ratio", 0.5))
 
         # v2: Dynamic sizing
-        self.kelly_fraction = float(cfg.get("kelly_fraction", 0.5))
+        # P0-3 FIX: Raise confidence thresholds to institutional standards
+        # Was 0.65 (too low) → now 0.75 (minimum for live trading)
         self.confidence_high = float(cfg.get("confidence_high", 0.85))
-        self.confidence_medium = float(cfg.get("confidence_medium", 0.65))
+        self.confidence_medium = float(cfg.get("confidence_medium", 0.75))
         self.risk_high_conf = float(cfg.get("risk_high_conf", 0.015))
         self.risk_med_conf = float(cfg.get("risk_med_conf", 0.0075))
         self.risk_low_conf = float(cfg.get("risk_low_conf", 0.0035))
@@ -319,10 +317,8 @@ class RiskManager:
             portfolio_context: {open_symbols: [...], returns_df: DataFrame, spread_bps: float, ...}
         """
         self.state.reset_for_new_day(account_equity)
-        result = PipelineResult(approved=False)
         layers_passed = 0
         layers_failed = 0
-        failed_layers: list[str] = []
         risk_score = 0
 
         ctx = portfolio_context or {}

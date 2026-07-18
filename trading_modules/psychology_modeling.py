@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -82,13 +81,9 @@ class PsychologyAnalyzer:
             return PsychologyResult("neutral", 0.0, 50.0, notes=["insufficient data"])
         recent = df.tail(self.lookback).reset_index(drop=True)
         close = recent["close"]
-        high = recent["high"]
-        low = recent["low"]
         vol = recent["volume"]
 
         # ── Indicators ────────────────────────────────────────────
-        # Returns
-        rets = close.pct_change().fillna(0)
         # RSI
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(self.rsi_period).mean()

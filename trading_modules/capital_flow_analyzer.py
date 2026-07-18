@@ -45,9 +45,9 @@ Usage:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -145,8 +145,6 @@ class CapitalFlowAnalyzer:
             return result
 
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
         vol = df.get("volume", pd.Series(1, index=df.index))
 
         # === 1. Money Flow Index (MFI) ===
@@ -408,16 +406,16 @@ class CapitalFlowAnalyzer:
                 f"but price stalling. Smart money absorbing orders."
             ),
             FlowType.ACCUMULATION: (
-                f"Quiet accumulation — OBV rising, low volume. "
-                f"Smart money positioning before markup."
+                "Quiet accumulation — OBV rising, low volume. "
+                "Smart money positioning before markup."
             ),
             FlowType.DISTRIBUTION: (
-                f"Quiet distribution — OBV falling, low volume. "
-                f"Smart money exiting before markdown."
+                "Quiet distribution — OBV falling, low volume. "
+                "Smart money exiting before markdown."
             ),
             FlowType.ROTATION: (
-                f"Volume rotation detected — capital shifting levels. "
-                f"Watch for direction change."
+                "Volume rotation detected — capital shifting levels. "
+                "Watch for direction change."
             ),
             FlowType.NEUTRAL: "No significant capital flow detected.",
         }

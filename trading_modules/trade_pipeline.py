@@ -47,14 +47,13 @@ import pandas as pd
 
 from .smc_detector import SMCDetector, SMCResult
 from .confluence_gate import ConfluenceGate, ConfluenceInput, ConfluenceResult
-from .rating_system import RatingSystem, RatingResult
-from .kill_conditions import KillConditions, PortfolioState, KillDecision
-from .bias_tracker import BiasTracker, BiasProfile
-from .kelly_sizing import kelly_position_size, KellyResult
-from .r_multiple_tp import RMultipleTP, Position, TPPlan
+from .rating_system import RatingSystem
+from .kill_conditions import KillConditions, PortfolioState
+from .bias_tracker import BiasTracker
+from .kelly_sizing import kelly_position_size
+from .r_multiple_tp import RMultipleTP, Position
 from .coin_cooldown import CoinCooldownManager
 from .signal_processor import SignalProcessor, TradingDecision
-from .cpcv import CPCV
 
 logger = logging.getLogger(__name__)
 
@@ -333,7 +332,7 @@ class TradePipeline:
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, 1e-10)
-        rsi = float(50 + (100 * (gain - loss) / (gain + loss).replace(0, 1e-10)).iloc[-1])
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
         rsi = max(0, min(100, rsi))
 
         # Volume ratio (current vs 20-bar average)

@@ -49,7 +49,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -218,7 +217,6 @@ class PlattCalibrator:
         Minimizes logistic loss: -sum(y*log(sig(a*x+b)) + (1-y)*log(1-sig(a*x+b)))
         """
         a, b = 1.0, 0.0  # Start with identity
-        n = len(X)
 
         for _ in range(iterations):
             z = a * X + b

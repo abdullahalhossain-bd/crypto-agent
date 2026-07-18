@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 from utils.logger import get_logger
@@ -158,9 +157,6 @@ class MarketContextEngine:
             return result
 
         close = df["close"]
-        high = df["high"]
-        low = df["low"]
-        vol = df.get("volume", pd.Series(1, index=df.index))
 
         # === 1. TREND score ===
         result.trend_score = self._score_trend(df)

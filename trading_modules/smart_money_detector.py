@@ -33,7 +33,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -133,12 +133,6 @@ class SmartMoneyDetector:
             result.description = "insufficient data"
             return result
 
-        close = df["close"]
-        high = df["high"]
-        low = df["low"]
-        vol = df.get("volume", pd.Series(1, index=df.index))
-        open_ = df["open"]
-
         # === 1. Absorption detection ===
         result.absorption_detected, result.absorption_level = self._detect_absorption(df)
 
@@ -230,7 +224,6 @@ class SmartMoneyDetector:
         # Recent swing highs/lows
         high = df["high"]
         low = df["low"]
-        close = df["close"]
         # Equal highs (resistance with stops above)
         recent_highs = high.tail(50).nlargest(5)
         eq_high = recent_highs.std() / max(recent_highs.mean(), 1e-10) < 0.002

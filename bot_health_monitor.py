@@ -24,7 +24,7 @@ import time
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "data" / "trading_bot.db"
@@ -76,7 +76,7 @@ def check_mt5_from_logs():
         last_mt5_msg = ""
         for line in reversed(lines):
             if "MT5 connected" in line or "account verified" in line:
-                mt3_connected = True
+                mt5_connected = True
                 last_mt5_msg = line.strip()[:80]
                 break
             if "Terminal: Not found" in line or "MT5 error" in line:
@@ -88,7 +88,9 @@ def check_mt5_from_logs():
 
         if mt5_errors > 0:
             return "DEGRADED", f"{mt5_errors} recent errors"
-        return "CONNECTED", last_mt5_msg
+        if mt5_connected:
+            return "CONNECTED", last_mt5_msg
+        return "unknown", "no MT5 connection/error messages found in recent logs"
     except Exception as e:
         return "unknown", str(e)
 

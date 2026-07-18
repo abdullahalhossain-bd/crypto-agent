@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Callable
 
-import numpy as np
 import pandas as pd
 
 from utils.indicators import atr
@@ -353,7 +352,6 @@ class PatternDetector:
         prev2_bear = p2c < p2o
         bar_time = bar.get("time", None) if "time" in df.columns else None
         comps = lambda **kw: dict(kw, atr_ratio=range_ / atr_val if atr_val > 0 else 0, volume_mult=vol_mult)
-        conf_base = lambda: self._base_confidence(range_, atr_val, vol_mult)
 
         # ===== SINGLE-BAR PATTERNS =====
 
@@ -686,7 +684,6 @@ class PatternDetector:
 
         # 41-42. Fair Value Gaps (3-bar: gap between bar 1 high and bar 3 low, all same color)
         if prev3 is not None:
-            p3h, p3l = float(prev3["high"]), float(prev3["low"])
             p3_bull = float(prev3["close"]) > float(prev3["open"])
             p3_bear = float(prev3["close"]) < float(prev3["open"])
             # FVG Rising: bar1 (prev2) high < bar3 (current) low, all bullish

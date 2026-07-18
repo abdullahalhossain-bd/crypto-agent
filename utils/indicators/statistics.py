@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy import stats as scipy_stats
 
 from utils.indicators.caching import cached
 
@@ -118,8 +117,11 @@ def stationarity_score(close: pd.Series, period: int = 50) -> pd.Series:
     p < 0.05: stationary (mean-reverting)
     p >= 0.05: non-stationary (trending)
     """
-    from statsmodels.tsa.stattools import adfuller
     result = pd.Series(np.nan, index=close.index, dtype=float)
+    try:
+        from statsmodels.tsa.stattools import adfuller
+    except ImportError:
+        return result
     for i in range(period, len(close)):
         window = close.iloc[i - period:i].dropna()
         if len(window) < 30 or window.std() == 0:
